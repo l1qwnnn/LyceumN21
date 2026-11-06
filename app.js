@@ -428,6 +428,7 @@ var NAV_ITEMS = [
   { r: 'teachers', label: 'Вчителі' },
   { r: 'schedule', label: 'Розклад' },
   { r: 'news', label: 'Новини' },
+  { r: 'gallery', label: 'Вигляд ліцею' },
   { r: 'contacts', label: 'Контакти' }
 ];
 
@@ -438,6 +439,7 @@ var DRAWER_MAIN = [
   { r: 'teachers', label: 'Вчителі', icon: 'briefcase' },
   { r: 'schedule', label: 'Розклад дзвінків', icon: 'clock' },
   { r: 'news', label: 'Новини та події', icon: 'news' },
+  { r: 'gallery', label: 'Вигляд ліцею', icon: 'palette' },
   { r: 'dining', label: 'Їдальня', icon: 'bowl' },
   { r: 'admissions', label: 'Зарахування', icon: 'door' },
   { r: 'contacts', label: 'Контакти', icon: 'pin' }
@@ -506,7 +508,7 @@ var PAGES = {};
 var TITLES = {
   home: 'Головна', history: 'Історія ліцею', students: 'Учням', teachers: 'Вчителі',
   schedule: 'Розклад', news: 'Новини та події', dining: 'Їдальня', admissions: 'Зарахування',
-  contacts: 'Контакти', auth: 'Вхід і реєстрація', profile: 'Профіль', diary: 'Щоденник',
+  gallery: 'Вигляд ліцею', contacts: 'Контакти', auth: 'Вхід і реєстрація', profile: 'Профіль', diary: 'Щоденник',
   teacher: 'Панель вчителя', notfound: 'Сторінку не знайдено'
 };
 
@@ -1064,6 +1066,31 @@ function newsPage() {
     '<p class="small muted">Збори та заходи оголошуються через класних керівників, зміни з’являються тут першими.</p></div>' +
     '<div class="card-panel"><h2>' + ic('news') + '<span>Останні новини</span></h2>' +
     '<div class="row-list">' + items + '</div></div></section>';
+}
+
+/* ---------- вигляд ліцею ---------- */
+var GALLERY = [
+  { src: 'assets/photos/liceum-facade.jpg', title: 'Головний фасад', text: 'Чотириповерховий корпус ліцею з боку вулиці Святослава Ріхтера: центральний вхід і двір перед ним.' },
+  { src: 'assets/photos/liceum-entrance.jpg', title: 'Вхід і подвір’я', text: 'Центральний вхід та алея до нього влітку: огорожа, дерева й майданчик перед дверима.' }
+];
+
+function galleryPage() {
+  var tiles = GALLERY.map(function (photo) {
+    return '<figure class="photo-card"><a class="photo-link" href="' + esc(photo.src) + '" target="_blank" rel="noopener">' +
+      '<img src="' + esc(photo.src) + '" alt="' + esc(photo.title) + ' ліцею №21" loading="lazy" decoding="async"></a>' +
+      '<figcaption><b>' + esc(photo.title) + '</b><span>' + esc(photo.text) + '</span></figcaption></figure>';
+  }).join('');
+
+  return '<section class="page-wide">' + breadcrumbHtml('gallery') +
+    '<div class="heading-panel"><div><p class="kicker">' + ic('palette') + '<span>Фотогалерея</span></p>' +
+    '<h1 class="page-title">Вигляд ліцею</h1>' +
+    '<p class="page-sub">Будівля, центральний вхід і подвір’я Житомирського міського ліцею №21. ' +
+    'Натисніть на фото, щоб відкрити його повністю.</p></div>' +
+    '<div class="select-line"><a class="btn-dark btn-sm" href="#/contacts">' + ic('pin') + '<span>Як дістатися</span></a></div></div>' +
+    '<div class="photo-grid">' + tiles + '</div>' +
+    '<div class="card-panel"><h2>' + ic('info') + '<span>Про фото</span></h2>' +
+    '<p class="small muted">Світлини показують головний фасад та центральний вхід. Нові фотографії корпусів, ' +
+    'спортивної зали й кабінетів додає адміністратор порталу.</p></div></section>';
 }
 
 /* ---------- їдальня ---------- */
@@ -1713,6 +1740,7 @@ PAGES.students = studentsPage;
 PAGES.teachers = teachersPage;
 PAGES.schedule = schedulePage;
 PAGES.news = newsPage;
+PAGES.gallery = galleryPage;
 PAGES.dining = diningPage;
 PAGES.admissions = admissionsPage;
 PAGES.contacts = contactsPage;

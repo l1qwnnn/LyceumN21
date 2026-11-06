@@ -91,9 +91,10 @@ img { max-width: 100%; display: block; }
 .page, footer { position: relative; z-index: 1; }
 
 /* NAVBAR: плаваючий pill, по центру */
-.navbar { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); width: min(1080px, calc(100% - 64px)); z-index: 700; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 22px; background: var(--nav-bg); backdrop-filter: blur(20px); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 10px 32px var(--shadow), 0 1px 0 var(--chip) inset; flex-wrap: nowrap; }
+.navbar { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); width: min(1180px, calc(100% - 64px)); z-index: 700; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 22px; background: var(--nav-bg); backdrop-filter: blur(20px); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 10px 32px var(--shadow), 0 1px 0 var(--chip) inset; flex-wrap: nowrap; }
 .nav-logo { font-size: 1.35rem; font-weight: 800; text-decoration: none; display: inline-flex; align-items: center; gap: 9px; flex: 0 0 auto; }
 .nav-logo svg { width: 26px; height: 26px; flex: 0 0 auto; }
+.nav-logo-img { width: 44px; height: 44px; display: block; flex: 0 0 auto; border-radius: 50%; object-fit: cover; background: #fff; box-shadow: 0 0 0 1px rgba(255,255,255,.16); }
 .nav-right { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .nav-links { display: flex; align-items: center; gap: 2px; }
 .nav-link { padding: 8px 11px; border-radius: 12px; text-decoration: none; font-size: .86rem; font-weight: 600; white-space: nowrap; opacity: .8; transition: background .2s ease, opacity .2s ease, transform .18s cubic-bezier(.22,1,.36,1); }
@@ -101,9 +102,10 @@ img { max-width: 100%; display: block; }
 .nav-link.active { background: var(--invert-bg); color: var(--invert-text); opacity: 1; }
 .nav-user { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .btn-nav-auth, .btn-nav-profile { padding: 8px 16px; background: var(--invert-bg); color: var(--invert-text); border: none; border-radius: 14px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; height: 42px; white-space: nowrap; font-size: .9rem; }
-.btn-nav-profile .nav-username { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn-nav-profile .nav-username { max-width: 150px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn-nav-profile .role-badge { line-height: 20px; }
 .btn-logout { padding: 8px 12px; background: rgba(192,57,43,.9); color: #fff; border: none; border-radius: 14px; cursor: pointer; height: 42px; display: inline-flex; align-items: center; }
-.nav-ico { width: 42px; height: 42px; padding: 0; background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 14px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.nav-ico { flex: 0 0 auto; width: 42px; height: 42px; padding: 0; background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 14px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .nav-ico:hover { background: var(--chip-hover); border-color: var(--line-hover); }
 .nav-ico svg { width: 19px; height: 19px; }
 .nav-burger { display: none; }
@@ -249,7 +251,7 @@ details.row > summary:hover { background: var(--hover); }
 .pill-audit { background: rgba(124,92,255,.14); color: #bcaeff; border-color: rgba(124,92,255,.4); opacity: 1; }
 html[data-theme="light"] .pill-audit { color: #5a3fd0; }
 .pill-warn { background: var(--mark-yellow-bg); color: var(--mark-yellow-text); border-color: var(--mark-yellow-line); opacity: 1; }
-.role-badge { display: inline-block; vertical-align: middle; padding: 2px 8px; border-radius: 8px; font-size: .68rem; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; line-height: 1.5; }
+.role-badge { display: inline-flex; align-items: center; justify-content: center; height: 20px; padding: 0 8px; border-radius: 8px; font-size: .68rem; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; line-height: 1; vertical-align: middle; }
 .role-curator { background: #ffb020; color: #2a1a00; }
 .role-teacher { background: var(--invert-bg); color: var(--invert-text); }
 
@@ -347,6 +349,16 @@ html[data-theme="light"] .account-avatar { color: #fff; }
 .check input { width: 17px; height: 17px; accent-color: var(--accent-strong); }
 .done .cfg-desc { text-decoration: line-through; opacity: .5; }
 
+/* Фотогалерея «Вигляд ліцею» */
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 320px)); gap: 16px; margin-top: 16px; justify-content: center; }
+.photo-card { margin: 0; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); overflow: hidden; display: flex; flex-direction: column; }
+.photo-link { display: block; overflow: hidden; }
+.photo-card img { display: block; width: 100%; height: auto; transition: transform .35s cubic-bezier(.22,1,.36,1); }
+.photo-link:hover img { transform: scale(1.04); }
+.photo-card figcaption { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.5; }
+.photo-card figcaption b { font-size: 14px; }
+.photo-card figcaption span { opacity: .8; }
+
 footer { text-align: center; padding: 30px 20px; border-top: 1px solid var(--line-strong); opacity: .9; }
 footer p { font-size: 13.5px; line-height: 1.6; }
 .footer-links { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 13px; opacity: .8; }
@@ -356,6 +368,10 @@ footer p { font-size: 13.5px; line-height: 1.6; }
 .skip-link { position: absolute; left: -9999px; top: 0; z-index: 900; background: var(--invert-bg); color: var(--invert-text); padding: 10px 16px; border-radius: 0 0 12px 0; text-decoration: none; font-weight: 700; }
 .skip-link:focus { left: 0; }
 
+@media (max-width: 1320px) {
+  .nav-link { padding: 8px 8px; font-size: .8rem; }
+  .btn-nav-profile .nav-username { max-width: 110px; }
+}
 @media (max-width: 1180px) {
   .navbar { gap: 8px; padding: 12px 16px; }
   .nav-link { padding: 8px 9px; font-size: .79rem; }

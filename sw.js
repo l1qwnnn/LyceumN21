@@ -1,5 +1,5 @@
 /* Lyceum N21, офлайн-кеш. Версія змінюється при кожному оновленні файлів. */
-var CACHE = 'lyceum21-v2';
+var CACHE = 'lyceum21-v4';
 var ASSETS = [
   './',
   './index.html',
@@ -9,7 +9,10 @@ var ASSETS = [
   './manifest.webmanifest',
   './404.html',
   './assets/icon.svg',
-  './assets/preview.svg'
+  './assets/preview.svg',
+  './assets/logo.jpg',
+  './assets/photos/liceum-facade.jpg',
+  './assets/photos/liceum-entrance.jpg'
 ];
 
 self.addEventListener('install', function (event) {

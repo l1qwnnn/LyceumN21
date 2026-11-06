@@ -4,7 +4,7 @@
   "description": "Портал ліцею: історія, вчителі, розклад дзвінків, електронний щоденник з оцінками, меню їдальні та контакти.",
   "lang": "uk",
   "dir": "ltr",
-  "start_url": "./index.html",
+  "start_url": "./index.html#/home",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",

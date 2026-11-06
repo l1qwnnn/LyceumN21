@@ -10,6 +10,7 @@ const OUT = path.join(__dirname, '..', 'lyceum-n21.html');
 
 const read = (f) => fs.readFileSync(path.join(SRC, f), 'utf8');
 const b64 = (f) => Buffer.from(read(f), 'utf8').toString('base64');
+const b64bin = (f) => fs.readFileSync(path.join(SRC, f)).toString('base64');
 
 let html = read('index.html');
 const css = read('style.css').replace('Lyceum N21: стилі порталу (style.css)', 'Lyceum N21: стилі порталу');
@@ -36,10 +37,23 @@ const swBlock = `
     });
   }`;
 if (!app.includes(swBlock)) throw new Error('Не знайдено блок реєстрації sw.js');
-const appSingle = app.replace(swBlock, '');
+let appSingle = app.replace(swBlock, '');
 
-sub('<link rel="icon" type="image/svg+xml" href="assets/icon.svg">',
-    '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,' + b64('assets/icon.svg') + '">');
+/* Світлини галереї вбудовуються в один файл, щоб він не залежав від папки assets. */
+const photoDir = path.join(SRC, 'assets', 'photos');
+if (fs.existsSync(photoDir)) {
+  for (const file of fs.readdirSync(photoDir)) {
+    const rel = 'assets/photos/' + file;
+    if (!appSingle.includes(rel)) continue;
+    const mime = /\.png$/i.test(file) ? 'image/png' : 'image/jpeg';
+    const data = fs.readFileSync(path.join(photoDir, file)).toString('base64');
+    appSingle = appSingle.split(rel).join('data:' + mime + ';base64,' + data);
+  }
+}
+
+sub('<link rel="icon" type="image/jpeg" href="assets/logo.jpg">',
+    '<link rel="icon" type="image/jpeg" href="data:image/jpeg;base64,' + b64bin('assets/logo.jpg') + '">');
+sub('src="assets/logo.jpg"', 'src="data:image/jpeg;base64,' + b64bin('assets/logo.jpg') + '"');
 sub('<meta property="og:image" content="assets/preview.svg">',
     '<meta property="og:image" content="data:image/svg+xml;base64,' + b64('assets/preview.svg') + '">');
 sub('<link rel="manifest" href="manifest.webmanifest">\n', '');
