@@ -1036,7 +1036,7 @@ function schedulePage() {
     '<div class="card-panel"><h2>' + ic('bell') + '<span>Розклад дзвінків ' + esc(klass) + ' класу</span></h2>' +
     '<p class="small muted">Урок триває 45 хвилин. Число між уроками це перерва у хвилинах.</p>' +
     '<div class="cfg-list">' + bell + '</div></div>' +
-    '<div class="card-panel"><h2>' + ic('calendar') + '<span>Тиждневний план</span></h2>' +
+    '<div class="card-panel"><h2>' + ic('calendar') + '<span>Тижневий план</span></h2>' +
     '<div class="row-list">' + days + '</div>' +
     '<p class="small muted">Точний розклад вашого класу видає адміністрація на початку семестру та у групі Human.ua.</p></div>' +
     '</section>';
