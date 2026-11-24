@@ -162,7 +162,7 @@ function recentNews() {
   var cutoff = target.toISOString().slice(0, 10);
   var merged = new Map(NEWS.concat(newsPosts).map(function (post) { return [post.id || post.url, post]; }));
   return Array.from(merged.values()).filter(function (post) {
-    return post.date >= cutoff && post.date <= today;
+    return (NEWS.includes(post) || post.date >= cutoff) && post.date <= today;
   }).sort(function (a, b) { return b.date.localeCompare(a.date); });
 }
 
