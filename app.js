@@ -263,7 +263,7 @@ function homePage() {
     '<div class="filter-tabs" role="group" aria-label="Категорії розділів">' +
     Object.keys(NAV_CATS).map(function (key) { return '<button class="ftab" type="button" data-category-filter="' + key + '">' + esc(NAV_CATS[key]) + '</button>'; }).join('') +
     '</div><div class="cards" id="portalCards">' + items + '</div><p id="emptyCards" class="muted" hidden>Розділів не знайдено.</p></section>' +
-    card('Новини та оголошення ліцею', '<div id="newsList"></div>' + actions([['#/news', 'Усі актуальні новини']])) +
+    card('Новини та оголошення ліцею', '<div id="newsList"></div>') +
     card('Ліцей у цифрах', rows([['Рік заснування', SCHOOL.founded], ['Учителів за даними АІКОМ', SCHOOL.teachers], ['Максимальний бал у 5–9 класах', 12]]));
 }
 
