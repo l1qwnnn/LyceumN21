@@ -193,9 +193,12 @@ function renderNews() {
     var time = '<time datetime="' + esc(post.date) + '">' + date + '</time>';
     if (home) return '<article class="news-item"><header><h3>' + ic('news') + esc(post.title) + '</h3>' + time +
       '</header><p>' + esc(post.text) + '</p></article>';
-    return '<details class="row news-story"><summary><span class="row-main"><span class="news-tag">' +
-      esc(post.tag || 'Ліцей') + '</span><strong>' + esc(post.title) + '</strong></span>' +
-      '<span class="row-sign">' + time + ic('arrow') + '</span></summary><div class="row-body"><p>' + esc(post.text) + '</p></div></details>';
+    return '<details class="news-story"><summary><span class="news-story-date"><strong>' +
+      esc(post.date.slice(8, 10)) + '</strong><small>' + esc(post.date.slice(5, 7) + '.' + post.date.slice(0, 4)) +
+      '</small></span><span class="news-story-main"><span class="news-tag">' + esc(post.tag || 'Ліцей') +
+      '</span><strong>' + esc(post.title) + '</strong><span class="news-preview">' + esc(post.text) +
+      '</span></span><span class="news-story-arrow">' + ic('arrow') + '</span></summary>' +
+      '<div class="news-story-body"><p>' + esc(post.text) + '</p></div></details>';
   }).join('');
   if (target.renderedNews === content) return;
   target.renderedNews = content;
@@ -207,7 +210,7 @@ function renderNews() {
       '</div><div aria-hidden="true" inert>' + content + '</div></div></div>';
     target.style.setProperty('--ticker-duration', posts.length * 10.7 + 's');
   } else {
-    target.innerHTML = '<div class="row-list">' + content + '</div>';
+    target.innerHTML = '<div class="news-list" role="list" aria-label="Новини ліцею">' + content + '</div>';
   }
 }
 
