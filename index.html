@@ -2,20 +2,19 @@
 <html lang="uk" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lyceum N21 · Житомирський міський ліцей №21</title>
-<meta name="description" content="Інформаційний портал Житомирського міського ліцею №21: історія ліцею, учням, вчителі, розклад дзвінків, електронний щоденник з оцінками, меню їдальні та контакти.">
-<meta name="theme-color" content="#050505" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Lyceum N21 · Ліцей № 21 міста Житомира</title>
+<meta name="description" content="Інформаційний портал Ліцею № 21 міста Житомира: історія ліцею, учням, вчителі, розклад дзвінків, електронний щоденник з оцінками, меню їдальні та контакти.">
+<meta name="theme-color" id="themeColor" content="#050505">
 <meta name="color-scheme" content="dark light">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Lyceum N21">
 <meta property="og:locale" content="uk_UA">
-<meta property="og:title" content="Lyceum N21 · Житомирський міський ліцей №21">
+<meta property="og:title" content="Lyceum N21 · Ліцей № 21 міста Житомира">
 <meta property="og:description" content="Історія ліцею, вчителі, розклад дзвінків, електронний щоденник, меню їдальні та контакти.">
 <meta property="og:image" content="assets/preview.svg">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Lyceum N21 · Житомирський міський ліцей №21">
+<meta name="twitter:title" content="Lyceum N21 · Ліцей № 21 міста Житомира">
 <meta name="twitter:description" content="Інформаційний портал ліцею: розклад, щоденник, вчителі, новини.">
 <link rel="icon" type="image/jpeg" href="assets/logo.jpg">
 <link rel="manifest" href="manifest.webmanifest">
@@ -27,12 +26,17 @@
       var saved = window.localStorage.getItem('lyceum21_theme');
       var light = saved === 'light' || (!saved && window.matchMedia('(prefers-color-scheme: light)').matches);
       document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+      document.getElementById('themeColor').content = light ? '#f4f6f9' : '#050505';
     } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
   })();
 </script>
 </head>
 <body>
 <a class="skip-link" href="#main">До змісту</a>
+<div class="site-background" aria-hidden="true">
+  <video id="siteVideo" data-src="assets/background.mp4" autoplay muted loop playsinline preload="none" tabindex="-1"></video>
+</div>
+<button class="abtn video-toggle" id="videoToggle" type="button" hidden>Призупинити фон</button>
 
 <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
 <symbol id="i-cap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5 12 4.5l9.5 4-9.5 4-9.5-4Z"/><path d="M6 10.5V16c0 1.7 2.7 3 6 3s6-1.3 6-3v-5.5"/><path d="M21 9v5"/></symbol>
@@ -76,7 +80,7 @@
 <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.9l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-2.9 1.2v.17a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-2.9-1.2l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0-1.2-2.9H3.1a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.2-2.9l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.9.34h.08a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 2.9 1.2l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.9v.08a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/></symbol>
 </svg>
 
-<nav class="navbar">
+<nav class="navbar" aria-label="Головне меню">
   <a class="nav-logo" href="#/home"><img class="nav-logo-img" src="assets/logo.jpg" alt="Ліцей №21 · Житомир" width="44" height="44"><span class="nav-logo-label">Lyceum&nbsp;N21</span></a>
   <div class="nav-right">
     <div class="nav-links" id="navLinks"></div>
@@ -88,12 +92,12 @@
 
 <div class="nav-drawer" id="navDrawer" role="navigation" aria-label="Розділи порталу"></div>
 
-<main class="page" id="main"><div id="app"></div></main>
+<main class="page" id="main" tabindex="-1"><div id="app"></div></main>
 
 <footer>
-  <p>© 2026 Lyceum N21. Житомирський міський ліцей №21, вул. Святослава Ріхтера, 6-а, м. Житомир, 10008.</p>
-  <p class="small" style="margin-top:6px;opacity:.8">Приймальня (0412) 47-06-55, lyceum21@zto.ua, 21.lic.zhitomir.ua</p>
-  <nav class="footer-links">
+  <p>Ліцей № 21 міста Житомира · вул. Святослава Ріхтера, 6-а, Житомир, 10008</p>
+  <p><a href="tel:+380412470655">(0412) 47-06-55</a> · <a href="mailto:ztschool21@ukr.net">ztschool21@ukr.net</a></p>
+  <nav class="footer-links" aria-label="Посилання в підвалі">
     <a href="#/history">Історія ліцею</a>
     <a href="#/students">Учням</a>
     <a href="#/teachers">Вчителі</a>

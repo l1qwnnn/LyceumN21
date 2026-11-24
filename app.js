@@ -1,2006 +1,955 @@
 'use strict';
-/* ============================================================
-   Lyceum N21, логіка порталу.
-   Дані порталу лежать у data.js, оцінки, профілі, тема та
-   відмітки домашніх завдань зберігаються в цьому браузері.
-   ============================================================ */
 
-var LS_USERS = 'lyceum21_users';
-var LS_SESSION = 'lyceum21_session';
-var LS_MARKS = 'lyceum21_marks';
-var LS_HOMEWORK = 'lyceum21_homework';
-var LS_THEME = 'lyceum21_theme';
-
-/* Стан інтерфейсу: фільтри, пошук, вибрані класи та день меню */
-var navFilter = 'all';
-var navQuery = '';
-var teacherFilter = 'all';
-var teacherQuery = '';
-var scheduleClass = '';
-var diningDay = 0;
-var panelKlass = '7-В';
-var panelSubject = 'Українська мова';
-var panelQuery = '';
-var panelOpenPupil = '';
+var app = document.getElementById('app');
+var user = null;
+var accountStatus = 'loading';
+var sessionRevision = 0;
+var route = '';
+var revision = 0;
+var pageData = null;
+var pageError = '';
 var authMode = 'login';
 var teacherAccess = false;
-var notice = null;
-var noticeKind = 'success';
-var currentRoute = 'home';
-
-/* ---------- базові допоміжні функції ---------- */
-function lsGet(key) {
-  try { return window.localStorage.getItem(key); } catch (e) { return null; }
-}
-function lsSet(key, value) {
-  try { window.localStorage.setItem(key, value === null || value === undefined ? '' : String(value)); } catch (e) { /* сховище недоступне */ }
-}
-function lsDel(key) {
-  try { window.localStorage.removeItem(key); } catch (e) { /* сховище недоступне */ }
-}
+var navFilter = 'all';
+var schoolDate = new Intl.DateTimeFormat('uk-UA', { timeZone: 'Europe/Kyiv', dateStyle: 'long' });
+var clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+var civilDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' });
+var scheduleClass = '5-А';
+var scheduleDay = Math.min(4, Math.max(0, schoolDay() - 1));
+var journalClass = '5-А';
+var journalSubject = 'Українська мова';
+var journalQuery = '';
+var newsPosts = [];
+var newsAt = 0;
+var newsRequest;
+var ROLE_NAMES = { pupil: 'Учень', teacher: 'Учитель', admin: 'Адміністрація' };
 
 function esc(value) {
-  return String(value === null || value === undefined ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return String(value ?? '').replace(/[&<>"']/g, function (char) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
+  });
 }
 
-function ic(name, cls) {
-  return '<svg class="ic' + (cls ? ' ' + cls : '') + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+function ic(name) {
+  return '<svg class="ic" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
 }
 
-function hash32(str) {
-  var h = 2166136261;
-  for (var i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
+function link(href, title) {
+  return '<a class="abtn" href="' + esc(href) + '">' + esc(title) + '</a>';
+}
+
+function card(title, content, id) {
+  return '<section class="card-panel"' + (id ? ' id="' + id + '"' : '') + '><h2>' + esc(title) + '</h2>' + content + '</section>';
+}
+
+function heading(title, summary) {
+  return '<div class="heading-panel"><div><h1 class="page-title">' + esc(title) + '</h1>' +
+    (summary ? '<p class="page-sub">' + esc(summary) + '</p>' : '') + '</div></div>';
+}
+
+function rows(items) {
+  return '<dl class="row-list">' + items.map(function (item) {
+    return '<div class="row-line"><dt>' + esc(item[0]) + '</dt><dd>' + esc(item[1]) + '</dd></div>';
+  }).join('') + '</dl>';
+}
+
+function actions(links) {
+  return '<div class="entry-actions">' + links.map(function (item) { return link(item[0], item[1]); }).join('') + '</div>';
+}
+
+function classesHtml(selected, prompt) {
+  return (prompt ? '<option value="">Оберіть клас</option>' : '') + CLASSES.map(function (klass) {
+    return '<option' + (klass === selected ? ' selected' : '') + '>' + esc(klass) + '</option>';
+  }).join('');
+}
+
+function shortName(name) {
+  var parts = name.split(' ');
+  return [parts[0]].concat(parts.slice(1).map(function (part) { return part.charAt(0) + '.'; })).join(' ');
+}
+
+function schoolDay() {
+  var iso = civilDate.format(new Date());
+  return new Date(iso + 'T12:00:00Z').getUTCDay();
+}
+
+function minutes(time) {
+  var parts = time.split(':').map(Number);
+  return parts[0] * 60 + parts[1];
+}
+
+function timeString(value) {
+  return String(Math.floor(value / 60)).padStart(2, '0') + ':' + String(value % 60).padStart(2, '0');
+}
+
+async function api(path, method, body) {
+  if (!/^https?:$/.test(location.protocol)) throw new Error('Особистий кабінет доступний через сервер порталу.');
+  var response = await fetch('/api/' + path, {
+    method: method || 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('Сервер особистого кабінету недоступний.');
+  var data = await response.json();
+  if (!response.ok) {
+    var error = new Error(data.error || 'Не вдалося виконати дію.');
+    error.status = response.status;
+    throw error;
   }
-  return h >>> 0;
+  return data;
 }
 
-function rng(seed) {
-  var s = (seed || 1) >>> 0;
-  return function () {
-    s ^= s << 13; s >>>= 0;
-    s ^= s >> 17;
-    s ^= s << 5; s >>>= 0;
-    return s / 4294967296;
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.getElementById('themeColor').content = theme === 'dark' ? '#050505' : '#f4f6f9';
+  document.getElementById('themeIcon').setAttribute('href', theme === 'dark' ? '#i-sun' : '#i-moon');
+  document.getElementById('themeToggle').setAttribute('aria-label', theme === 'dark' ? 'Увімкнути світлу тему' : 'Увімкнути темну тему');
+}
+
+function initBackground() {
+  var video = document.getElementById('siteVideo');
+  if (!video?.dataset.src) return;
+  var toggle = document.getElementById('videoToggle');
+  var motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var allowed = !motion.matches && !navigator.connection?.saveData;
+  var paused = false;
+  function update() {
+    if (paused || !allowed || document.hidden) video.pause();
+    else video.play().catch(function () {});
+  }
+  video.addEventListener('playing', function () {
+    document.documentElement.classList.add('video-playing');
+    toggle.hidden = false;
+    toggle.textContent = 'Призупинити фон';
+  });
+  video.addEventListener('pause', function () { toggle.textContent = 'Відновити фон'; });
+  video.addEventListener('error', function () {
+    document.documentElement.classList.remove('video-playing');
+    toggle.hidden = true;
+  });
+  toggle.addEventListener('click', function () { paused = !video.paused; update(); });
+  motion.addEventListener('change', function () {
+    allowed = !motion.matches && !navigator.connection?.saveData;
+    if (allowed && !video.getAttribute('src')) video.src = video.dataset.src;
+    if (!allowed) document.documentElement.classList.remove('video-playing');
+    update();
+  });
+  document.addEventListener('visibilitychange', update);
+  if (allowed) {
+    video.src = video.dataset.src;
+    update();
+  }
+}
+
+function normalizeNews(post) {
+  var url;
+  try { url = new URL(post?.link); } catch { return null; }
+  if (url.origin !== new URL(OFFICIAL).origin) return null;
+  var date = post.date?.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  var decode = function (html) {
+    var fragment = document.createElement('template');
+    fragment.innerHTML = String(html || '');
+    return fragment.content.textContent.replace(/\s+/g, ' ').trim();
   };
+  var text = decode(post.excerpt?.rendered);
+  var title = decode(post.title?.rendered);
+  var known = NEWS.find(function (item) { return item.url === url.href; });
+  return { url: url.href, date: date, tag: known?.tag, title: known?.title || title || text.split(/[.!?…]/)[0].slice(0, 90) || 'Оголошення ліцею', text: known?.text || text };
 }
 
-function initials(fullName) {
-  var parts = String(fullName || '').trim().split(/\s+/);
-  return (parts[0] || '?').slice(0, 1).toUpperCase() + (parts[1] ? parts[1].slice(0, 1).toUpperCase() : '');
+function recentNews() {
+  var today = civilDate.format(new Date());
+  var end = new Date(today + 'T12:00:00Z');
+  var target = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1, 1));
+  var last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(end.getUTCDate(), last));
+  var cutoff = target.toISOString().slice(0, 10);
+  var merged = new Map(NEWS.concat(newsPosts).map(function (post) { return [post.id || post.url, post]; }));
+  return Array.from(merged.values()).filter(function (post) {
+    return post.date >= cutoff && post.date <= today;
+  }).sort(function (a, b) { return b.date.localeCompare(a.date); });
 }
 
-/* «Гаврилюк Оксана Степанівна» у «Гаврилюк О. С.» */
-function shortTeacher(name) {
-  var parts = String(name || '').trim().split(/\s+/);
-  if (parts.length < 2) return name;
-  return parts[0] + ' ' + parts[1].slice(0, 1) + '.' + (parts[2] ? ' ' + parts[2].slice(0, 1) + '.' : '');
+function loadNews() {
+  if (newsRequest || Date.now() - newsAt < 30 * 60_000 || !navigator.onLine) return;
+  if (!/^https?:$/.test(location.protocol)) return;
+  newsAt = Date.now();
+  newsRequest = api('news').catch(function () {
+    return fetch(SOURCES.newsApi, { signal: AbortSignal.timeout(5000) }).then(function (response) {
+      if (!response.ok) throw new Error();
+      return response.json();
+    }).then(function (posts) { return { posts: posts }; });
+  }).then(function (data) {
+    if (!Array.isArray(data.posts)) return;
+    if (!data.posts.length) newsAt = Date.now() - 29 * 60_000;
+    newsPosts = data.posts.map(normalizeNews).filter(Boolean);
+    if (route === 'home' || route === 'news') renderNews();
+  }).catch(function () { newsAt = Date.now() - 29 * 60_000; }).finally(function () { newsRequest = null; });
 }
 
-function telHref(phone) {
-  return String(phone || '').replace(/[^\d+]/g, '');
-}
-
-/* +380674123071 у +380 67 412-30-71 */
-function fmtPhone(raw) {
-  var d = String(raw || '').replace(/\D/g, '');
-  if (d.indexOf('380') === 0) d = d.slice(3);
-  if (d.length !== 9) return String(raw || '');
-  return '+380 ' + d.slice(0, 2) + ' ' + d.slice(2, 5) + '-' + d.slice(5, 7) + '-' + d.slice(7, 9);
-}
-
-function plural(n, forms) {
-  var mod10 = n % 10, mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return forms[0];
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
-  return forms[2];
-}
-
-function pad2(n) { return (n < 10 ? '0' : '') + n; }
-
-function toMinutes(hhmm) {
-  var p = String(hhmm).split(':');
-  return Number(p[0]) * 60 + Number(p[1]);
-}
-
-function nowMinutes(date) {
-  return date.getHours() * 60 + date.getMinutes();
-}
-
-function todayLabel(date) {
-  var wd = ['неділя', 'понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота'];
-  var mo = ['січня', 'лютого', 'березня', 'квітня', 'травня', 'червня', 'липня', 'серпня', 'вересня', 'жовтня', 'листопада', 'грудня'];
-  return wd[date.getDay()] + ', ' + date.getDate() + ' ' + mo[date.getMonth()] + ' ' + date.getFullYear();
-}
-
-/* ---------- класи, предмети, тижневий план ---------- */
-function classGrade(klass) {
-  return parseInt(String(klass || ''), 10) || 0;
-}
-
-function normClass(value) {
-  var raw = String(value || '').trim().toUpperCase();
-  for (var i = 0; i < CLASSES.length; i++) {
-    if (CLASSES[i] === raw) return CLASSES[i];
-  }
-  return '';
-}
-
-function subjectOf(name) {
-  for (var i = 0; i < SUBJECTS.length; i++) {
-    if (SUBJECTS[i].name === name) return SUBJECTS[i];
-  }
-  return null;
-}
-
-function classSubjects(klass) {
-  var names = GRADE_POOLS[classGrade(klass)] || [];
-  var out = [];
-  for (var i = 0; i < names.length; i++) {
-    var s = subjectOf(names[i]);
-    if (s) out.push(s);
-  }
-  return out;
-}
-
-/* 5 і 6 класи мають шість уроків, з 7 класу сім уроків щодня */
-function lessonsPerDay(grade) {
-  return grade >= 7 ? 7 : 6;
-}
-
-function buildWeek(klass) {
-  var grade = classGrade(klass);
-  var per = lessonsPerDay(grade);
-  var pool = classSubjects(klass);
-  if (!pool.length) return DAYS.map(function () { return []; });
-  var flat = [];
-  var need = per * DAYS.length;
-  for (var i = 0; i < need; i++) flat.push(pool[i % pool.length]);
-  var r = rng(hash32('week|' + klass));
-  for (var j = flat.length - 1; j > 0; j--) {
-    var k = Math.floor(r() * (j + 1));
-    var tmp = flat[j]; flat[j] = flat[k]; flat[k] = tmp;
-  }
-  var out = [];
-  for (var d = 0; d < DAYS.length; d++) {
-    var day = flat.slice(d * per, d * per + per);
-    day.sort(function (a, b) { return pool.indexOf(a) - pool.indexOf(b); });
-    out.push(day);
-  }
-  return out;
-}
-
-function curatorFor(klass) {
-  var names = [];
-  classSubjects(klass).forEach(function (s) {
-    if (names.indexOf(s.teacher) < 0) names.push(s.teacher);
-  });
-  if (!names.length) {
-    var t = TEACHERS.filter(function (x) { return x.role === 'вчитель'; })[0];
-    return t || TEACHERS[0];
-  }
-  var picked = names[hash32('curator|' + klass) % names.length];
-  for (var i = 0; i < TEACHERS.length; i++) {
-    if (TEACHERS[i].name === picked) return TEACHERS[i];
-  }
-  return TEACHERS[6];
-}
-
-function pupilsOfClass(klass) {
-  var list = PUPILS.filter(function (p) { return p.klass === klass; });
-  loadUsers().forEach(function (u) {
-    if (u.role !== 'pupil' || u.klass !== klass) return;
-    if (!list.some(function (p) { return p.name === u.fullName; })) {
-      list.push({ name: u.fullName, klass: klass });
-    }
-  });
-  return list;
-}
-
-/* ---------- профілі користувачів ---------- */
-function loadUsers() {
-  try {
-    var arr = JSON.parse(lsGet(LS_USERS) || '[]');
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) { return []; }
-}
-
-function saveUsers(users) {
-  lsSet(LS_USERS, JSON.stringify(users));
-}
-
-function updateUser(id, patch) {
-  saveUsers(loadUsers().map(function (u) {
-    if (u.id === id) {
-      for (var key in patch) if (Object.prototype.hasOwnProperty.call(patch, key)) u[key] = patch[key];
-    }
-    return u;
-  }));
-}
-
-function currentUser() {
-  var id = lsGet(LS_SESSION);
-  if (!id) return null;
-  var list = loadUsers().filter(function (u) { return u.id === id; });
-  return list.length ? list[0] : null;
-}
-
-function passHash(phone, pass) {
-  return hash32('a|' + phone + '|' + pass).toString(36) + hash32('b|' + pass + '|' + phone).toString(36);
-}
-
-/* ---------- оцінки ----------
-   Бали вносить лише вчитель у панелі, вони лежать у сховищі браузера. */
-function marksKey(klass, name, subject) {
-  return klass + '|' + name + '|' + subject;
-}
-
-function loadMarks() {
-  try {
-    var obj = JSON.parse(lsGet(LS_MARKS) || 'null');
-    return obj && typeof obj === 'object' ? obj : null;
-  } catch (e) { return null; }
-}
-
-function saveMarks(map) {
-  lsSet(LS_MARKS, JSON.stringify(map));
-}
-
-function getMarkEntry(klass, name, subject) {
-  var map = loadMarks();
-  var entry = map && map[marksKey(klass, name, subject)];
-  return entry && Array.isArray(entry.list) ? entry : { list: [], updated: '' };
-}
-
-function setMarkEntry(klass, name, subject, list) {
-  var map = loadMarks() || {};
-  var clean = [];
-  for (var i = 0; i < list.length; i++) {
-    var v = Number(list[i]);
-    if (v >= SCALE_MIN && v <= SCALE_MAX) clean.push(v);
-  }
-  map[marksKey(klass, name, subject)] = {
-    list: clean,
-    updated: new Date().toLocaleString('uk-UA')
-  };
-  saveMarks(map);
-}
-
-function clearPupilMarks(klass, name) {
-  var map = loadMarks() || {};
-  Object.keys(map).forEach(function (key) {
-    var parts = key.split('|');
-    if (parts[0] === klass && parts[1] === name) delete map[key];
-  });
-  saveMarks(map);
-}
-
-function markClass(value) {
-  var v = Number(value);
-  if (v <= 4) return 'mark-low';
-  if (v <= 8) return 'mark-mid';
-  return 'mark-top';
-}
-
-function markTone(value) {
-  var raw = String(value === null || value === undefined ? '' : value).trim();
-  if (!raw) return '';
-  var v = Number(raw);
-  if (!isFinite(v) || v < SCALE_MIN || v > SCALE_MAX) return '';
-  return v <= 4 ? 'low' : v <= 8 ? 'mid' : 'top';
-}
-
-function markHtml(value, extra) {
-  var v = Number(value);
-  if (!v) return '<span class="mark mark-empty">' + esc(String(value || '–')) + '</span>';
-  return '<span class="mark ' + markClass(v) + (extra ? ' ' + extra : '') + '">' + v + '</span>';
-}
-
-function avgOf(list) {
-  if (!list.length) return 0;
-  var sum = 0;
-  for (var i = 0; i < list.length; i++) sum += Number(list[i]);
-  return sum / list.length;
-}
-
-/* Рядки щоденника: предмет, вчитель, поточні бали, середній */
-function pupilRows(klass, name) {
-  var rows = classSubjects(klass).map(function (s) {
-    var entry = getMarkEntry(klass, name, s.name);
-    return {
-      name: s.name,
-      teacher: s.teacher,
-      room: s.room,
-      icon: s.icon,
-      list: entry.list,
-      updated: entry.updated,
-      average: avgOf(entry.list)
-    };
-  });
-  return rows;
-}
-
-function diarySummary(rows) {
-  var filled = rows.filter(function (r) { return r.list.length > 0; });
-  var total = 0;
-  var best = null;
-  var marks = 0;
-  filled.forEach(function (r) {
-    total += r.average;
-    marks += r.list.length;
-    if (!best || r.average > best.average) best = r;
-  });
-  return {
-    rows: rows,
-    filled: filled.length,
-    average: filled.length ? total / filled.length : 0,
-    best: best,
-    marks: marks
-  };
-}
-
-function levelWord(average) {
-  if (average >= 10.5) return 'достатній та високий рівень';
-  if (average >= 7.5) return 'середній рівень';
-  if (average > 0) return 'початковий рівень';
-  return 'оцінок ще немає';
-}
-
-/* ---------- домашні завдання ----------
-   Перелік будується з навчального плану класу, відмітки виконання
-   зберігаються окремо для кожного профілю. */
-function homeworkFor(user) {
-  var klass = user.klass;
-  if (!klass) return [];
-  var pool = classSubjects(klass);
-  var r = rng(hash32('hw|' + klass));
-  var start = Math.floor(r() * pool.length);
-  var tasks = [
-    'опрацювати §{n}, скласти план відповіді',
-    'виконати вправу {n} та виписати правила',
-    'підготувати картку для повторення теми {n}',
-    'робота на платформі ' + SCHOOL.platform + ', завдання {n}',
-    'проєкт у парі, презентація до теми {n}'
-  ];
-  var out = [];
-  var count = Math.min(5, pool.length);
-  for (var i = 0; i < count; i++) {
-    var s = pool[(start + i) % pool.length];
-    var n = 5 + Math.floor(r() * 24);
-    out.push({
-      id: user.id + '|' + klass + '|' + s.name,
-      subject: s.name,
-      icon: s.icon,
-      text: tasks[Math.floor(r() * tasks.length)].replace('{n}', n),
-      due: BELL[3].end
-    });
-  }
-  return out;
-}
-
-function loadHomeworkDone() {
-  try {
-    var obj = JSON.parse(lsGet(LS_HOMEWORK) || '{}');
-    return obj && typeof obj === 'object' ? obj : {};
-  } catch (e) { return {}; }
-}
-
-function toggleHomework(id, done) {
-  var map = loadHomeworkDone();
-  if (done) map[id] = true; else delete map[id];
-  lsSet(LS_HOMEWORK, JSON.stringify(map));
-}
-
-/* ---------- тема оформлення ---------- */
-function currentTheme() {
-  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-}
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  lsSet(LS_THEME, theme);
-  var icon = document.getElementById('themeIcon');
-  if (icon) icon.setAttribute('href', theme === 'light' ? '#i-moon' : '#i-sun');
-  var button = document.getElementById('themeToggle');
-  if (button) button.setAttribute('aria-label', theme === 'light' ? 'Увімкнути темну тему' : 'Увімкнути світлу тему');
-  var metas = document.querySelectorAll('meta[name="theme-color"]');
-  Array.prototype.forEach.call(metas, function (m) {
-    var light = String(m.getAttribute('media') || '').indexOf('light') > -1;
-    m.setAttribute('content', light ? '#f4f6f9' : '#050505');
-  });
-}
-
-function toggleTheme() {
-  applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
-}
-
-/* ---------- навігація ---------- */
-var NAV_ITEMS = [
-  { r: 'home', label: 'Головна' },
-  { r: 'students', label: 'Учням' },
-  { r: 'diary', label: 'Щоденник' },
-  { r: 'teachers', label: 'Вчителі' },
-  { r: 'schedule', label: 'Розклад' },
-  { r: 'news', label: 'Новини' },
-  { r: 'gallery', label: 'Вигляд ліцею' },
-  { r: 'contacts', label: 'Контакти' }
-];
-
-var DRAWER_MAIN = [
-  { r: 'home', label: 'Головна', icon: 'cap' },
-  { r: 'history', label: 'Історія ліцею', icon: 'book' },
-  { r: 'students', label: 'Учням', icon: 'users' },
-  { r: 'teachers', label: 'Вчителі', icon: 'briefcase' },
-  { r: 'schedule', label: 'Розклад дзвінків', icon: 'clock' },
-  { r: 'news', label: 'Новини та події', icon: 'news' },
-  { r: 'gallery', label: 'Вигляд ліцею', icon: 'palette' },
-  { r: 'dining', label: 'Їдальня', icon: 'bowl' },
-  { r: 'admissions', label: 'Зарахування', icon: 'door' },
-  { r: 'contacts', label: 'Контакти', icon: 'pin' }
-];
-
-function drawerItems() {
-  var user = currentUser();
-  var out = [];
-  if (user) {
-    out.push({ r: 'diary', label: 'Щоденник', icon: 'star' });
-    out.push({ r: 'profile', label: 'Профіль', icon: 'gear' });
-    if (user.role === 'teacher') out.push({ r: 'teacher', label: 'Панель вчителя', icon: 'pen' });
+function renderNews() {
+  var target = document.getElementById('newsList');
+  if (!target) return;
+  var posts = recentNews();
+  var home = route === 'home';
+  var content = posts.map(function (post) {
+    var date = post.date.split('-').reverse().join('.');
+    var time = '<time datetime="' + esc(post.date) + '">' + date + '</time>';
+    if (home) return '<article class="news-item"><header><h3>' + ic('news') + esc(post.title) + '</h3>' + time +
+      '</header><p>' + esc(post.text) + '</p></article>';
+    return '<details class="row news-story"><summary><span class="row-main"><span class="news-tag">' +
+      esc(post.tag || 'Ліцей') + '</span><strong>' + esc(post.title) + '</strong></span>' +
+      '<span class="row-sign">' + time + ic('arrow') + '</span></summary><div class="row-body"><p>' + esc(post.text) + '</p></div></details>';
+  }).join('');
+  if (target.renderedNews === content) return;
+  target.renderedNews = content;
+  if (!posts.length) {
+    target.innerHTML = '<p class="muted">За останній місяць немає опублікованих новин.</p>';
+  } else if (home && posts.length > 1) {
+    // Друга копія забезпечує безперервний перехід через кінець стрічки.
+    target.innerHTML = '<div class="news-window"><div class="news-track"><div>' + content +
+      '</div><div aria-hidden="true" inert>' + content + '</div></div></div>';
+    target.style.setProperty('--ticker-duration', posts.length * 10.7 + 's');
   } else {
-    out.push({ r: 'diary', label: 'Щоденник', icon: 'star' });
-    out.push({ r: 'auth', label: 'Вхід і реєстрація', icon: 'login' });
+    target.innerHTML = '<div class="row-list">' + content + '</div>';
   }
-  return out;
+}
+
+var NAV = [
+  ['home', 'Головна', 'cap'], ['schedule', 'Розклад', 'clock'], ['diary', 'Щоденник', 'star'],
+  ['teachers', 'Вчителі', 'users'], ['news', 'Новини', 'news'], ['students', 'Учням', 'book'],
+  ['contacts', 'Контакти', 'pin']
+];
+
+function setDrawer(open) {
+  document.body.classList.toggle('nav-open', open);
+  var burger = document.getElementById('navBurger');
+  burger.setAttribute('aria-expanded', String(open));
+  burger.querySelector('use').setAttribute('href', open ? '#i-close' : '#i-menu');
+}
+
+function navItem(item, icons) {
+  return '<a class="nav-link' + (route === item[0] ? ' active' : '') + '" href="#/' + item[0] + '"' +
+    (route === item[0] ? ' aria-current="page"' : '') + '>' + (icons ? ic(item[2]) : '') + '<span>' + esc(item[1]) + '</span></a>';
 }
 
 function renderNav() {
-  var user = currentUser();
-  var links = NAV_ITEMS.map(function (item) {
-    return '<a class="nav-link' + (currentRoute === item.r ? ' active' : '') + '" href="#/' + item.r + '">' + esc(item.label) + '</a>';
-  }).join('');
-  document.getElementById('navLinks').innerHTML = links;
-
-  var userBox = document.getElementById('navUser');
-  if (user) {
-    userBox.innerHTML =
-      '<a class="btn-nav-profile" href="#/profile"><span class="role-badge ' + (user.role === 'teacher' ? 'role-teacher' : 'role-curator') + '">' +
-      (user.role === 'teacher' ? 'Вчитель' : 'Учень') + '</span><span class="nav-username">' + esc(shortTeacher(user.fullName)) + '</span></a>' +
-      '<button class="btn-logout" type="button" data-action="logout">Вийти</button>';
-  } else {
-    userBox.innerHTML = '<a class="btn-nav-auth" href="#/auth">' + ic('login', 'ic-sm') + '<span>Увійти</span></a>';
-  }
-
-  var groups = '<p class="nav-drawer-head">Розділи порталу</p>' +
-    DRAWER_MAIN.map(function (item) {
-      return '<a class="nav-link' + (currentRoute === item.r ? ' active' : '') + '" href="#/' + item.r + '">' +
-        ic(item.icon, 'ic-sm') + '<span>' + esc(item.label) + '</span></a>';
-    }).join('') +
-    '<p class="nav-drawer-head">Особистий кабінет</p>' +
-    drawerItems().map(function (item) {
-      return '<a class="nav-link' + (currentRoute === item.r ? ' active' : '') + '" href="#/' + item.r + '">' +
-        ic(item.icon, 'ic-sm') + '<span>' + esc(item.label) + '</span></a>';
-    }).join('');
-  document.getElementById('navDrawer').innerHTML = groups;
-}
-
-function isDrawerOpen() {
-  return document.body.classList.contains('nav-open');
-}
-
-function setDrawer(open) {
-  document.body.classList.toggle('nav-open', !!open);
-  var burger = document.getElementById('navBurger');
-  if (burger) {
-    burger.setAttribute('aria-expanded', open ? 'true' : 'false');
-    var icon = burger.querySelector('use');
-    if (icon) icon.setAttribute('href', open ? '#i-close' : '#i-menu');
-  }
-}
-
-/* ---------- маршрутизація ---------- */
-var PAGES = {};
-var TITLES = {
-  home: 'Головна', history: 'Історія ліцею', students: 'Учням', teachers: 'Вчителі',
-  schedule: 'Розклад', news: 'Новини та події', dining: 'Їдальня', admissions: 'Зарахування',
-  gallery: 'Вигляд ліцею', contacts: 'Контакти', auth: 'Вхід і реєстрація', profile: 'Профіль', diary: 'Щоденник',
-  teacher: 'Панель вчителя', notfound: 'Сторінку не знайдено'
-};
-
-function parseHash() {
-  var h = String(location.hash || '');
-  if (!h || h === '#' || h === '#/') return { route: 'home', anchor: '' };
-  if (h.charAt(0) !== '#' || h.charAt(1) !== '/') return { keep: true, anchor: h.slice(1) };
-  var parts = h.slice(2).split(':');
-  return { route: parts[0] || 'home', anchor: parts[1] || '' };
-}
-
-function scrollToAnchor(id) {
-  var target = document.getElementById(id);
-  if (!target) return;
-  if (id === 'main') {
-    target.setAttribute('tabindex', '-1');
-    target.focus({ preventScroll: true });
-  }
-  var top = target.getBoundingClientRect().top + window.pageYOffset - 96;
-  window.scrollTo({ top: top < 0 ? 0 : top, behavior: 'smooth' });
-}
-
-function flashHtml() {
-  if (!notice) return '';
-  return '<div class="flash ' + esc(noticeKind) + '" role="status">' + esc(notice) + '</div>';
-}
-
-function breadcrumbHtml(route) {
-  var label = TITLES[route] || 'Сторінка';
-  if (route === 'home') return '';
-  return '<nav class="breadcrumbs" aria-label="Шлях сторінки">' +
-    '<a href="#/home">Головна</a><span aria-hidden="true">/</span><span>' + esc(label) + '</span></nav>';
-}
-
-function render() {
-  var state = parseHash();
-  if (state.keep) {
-    scrollToAnchor(state.anchor);
-    return;
-  }
-  var route = PAGES[state.route] ? state.route : 'notfound';
-  if (route === 'auth' && currentRoute !== 'auth') {
-    authMode = 'login';
-    teacherAccess = false;
-  }
-  if (route === 'teachers' && state.anchor === 'admin') teacherFilter = 'admin';
-  currentRoute = route;
-  document.getElementById('app').innerHTML = PAGES[route]();
-  renderNav();
-  setDrawer(false);
-  stopTicker();
-  stopNow();
-  if (route === 'home') {
-    startTicker();
-    startNow();
-    bindSearch('navSearch');
-  }
-  if (route === 'teachers') bindSearch('teacherSearch');
-  if (route === 'schedule' || route === 'diary') startNow();
-  if (route === 'auth') { bindAuth(); moveAuthThumb(); }
-  if (route === 'profile') bindPasswordForm();
-  if (route === 'teacher') { bindPanelSearch(); }
-  notice = null;
-  if (state.anchor) {
-    setTimeout(function () { scrollToAnchor(state.anchor); }, 60);
-  } else {
-    window.scrollTo(0, 0);
-  }
-  document.title = (TITLES[route] ? TITLES[route] + ' · ' : '') + 'Lyceum N21';
-}
-
-/* ---------- бігучий рядок новин ---------- */
-var tickerTimer = null;
-
-function reviewCardHtml(item) {
-  return '<div class="review-card"><div class="review-top"><span class="review-nick">' +
-    ic('news', 'ic-sm') + '<b>' + esc(item.title) + '</b></span>' +
-    '<span class="review-date">' + esc(item.date) + '</span></div>' +
-    '<p class="review-text">' + esc(item.text) + '</p></div>';
-}
-
-function reducedMotion() {
-  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-function startTicker() {
-  var track = document.getElementById('newsTrack');
-  if (!track) return;
-  var html = NEWS.map(reviewCardHtml).join('');
-  track.innerHTML = reducedMotion() ? html : html + html;
-  track.style.setProperty('--card-w', '320px');
-  if (reducedMotion()) return;
-  var total = NEWS.length * 334;
-  var pos = 0;
-  tickerTimer = setInterval(function () {
-    pos += 0.5;
-    if (pos >= total) pos -= total;
-    track.style.transform = 'translateX(' + (-pos) + 'px)';
-  }, 16);
-}
-
-function stopTicker() {
-  if (tickerTimer) { clearInterval(tickerTimer); tickerTimer = null; }
-}
-
-/* ---------- поточний урок і зворотний відлік ---------- */
-var nowTimer = null;
-
-function fmtMins(total) {
-  if (total >= 60) {
-    var h = Math.floor(total / 60);
-    var m = total % 60;
-    return h + ' ' + plural(h, ['година', 'години', 'годин']) + (m ? ' ' + m + ' ' + plural(m, ['хвилина', 'хвилини', 'хвилин']) : '');
-  }
-  return total + ' ' + plural(total, ['хвилина', 'хвилини', 'хвилин']);
-}
-
-function nowInfo(date) {
-  var res = {
-    clock: pad2(date.getHours()) + ':' + pad2(date.getMinutes()) + ':' + pad2(date.getSeconds()),
-    state: '', note: '', lesson: 0, next: 0
-  };
-  var day = date.getDay();
-  if (day === 0 || day === 6) {
-    res.state = 'Сьогодні вихідний';
-    res.note = 'Ліцей працює з понеділка по п’ятницю, гуртки не збираються';
-    return res;
-  }
-  var m = nowMinutes(date);
-  for (var i = 0; i < BELL.length; i++) {
-    var lesson = BELL[i];
-    var start = toMinutes(lesson.start);
-    var end = toMinutes(lesson.end);
-    if (m < start) {
-      res.next = lesson.n;
-      res.mins = start - m;
-      res.state = i === 0 ? 'До першого дзвінка' : 'Перерва';
-      res.note = i === 0
-        ? 'Уроки почнуться о ' + lesson.start
-        : lesson.n + '-й урок почнеться через ' + fmtMins(start - m) + ', о ' + lesson.start;
-      return res;
-    }
-    if (m <= end) {
-      res.lesson = lesson.n;
-      res.state = lesson.n + '-й урок іде';
-      res.note = 'До дзвінка ' + fmtMins(end - m);
-      return res;
-    }
-  }
-  res.state = 'Уроки закінчились';
-  res.note = 'Гуртки та секції починаються о 15:00, приймальня працює до 18:00';
-  return res;
-}
-
-function updateNow() {
-  var info = nowInfo(new Date());
-  var state = document.getElementById('nowState');
-  var clock = document.getElementById('nowClock');
-  if (state) state.innerHTML = ic('bell', 'ic-sm') + '<span>' + esc(info.state) + '</span>';
-  if (clock) {
-    clock.innerHTML = '<span>' + esc(info.note) + '</span><span>' + esc(info.clock) + '</span>';
-  }
-  Array.prototype.forEach.call(document.querySelectorAll('[data-lesson]'), function (row) {
-    var n = Number(row.getAttribute('data-lesson'));
-    row.classList.toggle('current', n === info.lesson);
-    row.classList.toggle('on', n === info.lesson || n === info.next);
-  });
-}
-
-function startNow() {
-  updateNow();
-  nowTimer = setInterval(updateNow, 1000);
-}
-
-function stopNow() {
-  if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
-}
-
-function nowStripHtml() {
-  var info = nowInfo(new Date());
-  return '<div class="now-strip"><div class="now-state" id="nowState">' + ic('bell', 'ic-sm') +
-    '<span>' + esc(info.state) + '</span></div>' +
-    '<div class="now-clock" id="nowClock"><span>' + esc(info.note) + '</span><span>' +
-    esc(info.clock) + '</span></div></div>';
-}
-
-/* ---------- поля пошуку ---------- */
-function bindSearch(inputId) {
-  var input = document.getElementById(inputId);
-  if (!input) return;
-  input.addEventListener('input', function () {
-    if (inputId === 'navSearch') navQuery = input.value; else teacherQuery = input.value;
-    render();
-    var again = document.getElementById(inputId);
-    if (again) {
-      again.focus();
-      again.setSelectionRange(again.value.length, again.value.length);
-    }
-  });
-}
-
-function bindPanelSearch() {
-  var input = document.getElementById('panelSearch');
-  if (!input) return;
-  input.addEventListener('input', function () {
-    panelQuery = input.value;
-    render();
-    var again = document.getElementById('panelSearch');
-    if (again) {
-      again.focus();
-      again.setSelectionRange(again.value.length, again.value.length);
-    }
-  });
-}
-
-function moveAuthThumb() {
-  var tabs = document.querySelectorAll('.auth-tab');
-  var thumb = document.getElementById('authThumb');
-  if (!tabs.length || !thumb) return;
-  var active = null;
-  Array.prototype.forEach.call(tabs, function (t) {
-    if (t.className.indexOf('active') > -1) active = t;
-  });
-  if (!active) return;
-  thumb.style.left = active.offsetLeft + 'px';
-  thumb.style.width = active.offsetWidth + 'px';
-}
-
-/* ============================================================
-   Сторінки порталу. Кожна функція повертає HTML секції.
-   ============================================================ */
-
-/* ---------- головна ---------- */
-function navCardHtml(card) {
-  return '<a class="card" href="' + esc(card.go) + '"><div class="card-cloud">' +
-    '<span class="card-ico">' + ic(card.icon) + '</span>' +
-    '<h3>' + esc(card.title) + '</h3><p>' + esc(card.desc) + '</p>' +
-    '<span class="card-go">Перейти ' + ic('arrow', 'ic-sm') + '</span>' +
-    '</div></a>';
-}
-
-function catCount(id) {
-  if (id === 'all') return NAV_CARDS.length;
-  return NAV_CARDS.filter(function (c) { return c.cat === id; }).length;
+  var extra = [['history', 'Історія ліцею', 'book'], ['admissions', 'Зарахування', 'door'], ['dining', 'Харчування', 'bowl'], ['gallery', 'Вигляд ліцею', 'palette']];
+  var account = user ? [['profile', 'Профіль', 'gear']] : [['auth', 'Вхід і реєстрація', 'login']];
+  if (user?.role === 'teacher') account.push(['teacher', 'Панель учителя', 'pen']);
+  if (user?.role === 'admin') account.push(['admin', 'Адміністрування', 'lock']);
+  document.getElementById('navLinks').innerHTML = NAV.map(function (item) { return navItem(item, false); }).join('');
+  document.getElementById('navDrawer').innerHTML = NAV.concat(extra, account).map(function (item) { return navItem(item, true); }).join('') +
+    (user ? '<button type="button" class="abtn" data-action="logout">Вийти</button>' : '');
+  document.getElementById('navUser').innerHTML = user ?
+    '<a class="btn-nav-profile" href="#/profile" aria-label="Профіль ' + esc(user.fullName) + '">' + ic('users') +
+    '<span class="nav-username">' + esc(shortName(user.fullName)) + '</span></a>' :
+    '<a class="btn-nav-auth" href="#/auth">' + ic('login') + '<span>Увійти</span></a>';
 }
 
 function homePage() {
-  var query = navQuery.trim().toLowerCase();
-  var cards = NAV_CARDS.filter(function (c) {
-    if (navFilter !== 'all' && c.cat !== navFilter) return false;
-    if (!query) return true;
-    return (c.title + ' ' + c.desc).toLowerCase().indexOf(query) > -1;
+  var items = NAV_CARDS.map(function (entry) {
+    return '<a class="card" data-category="' + entry[0] + '" data-search="' + esc((entry[2] + ' ' + entry[3]).toLowerCase()) +
+      '" href="#/' + entry[4] + '"><div class="card-cloud"><span class="card-ico">' + ic(entry[1]) +
+      '</span><h3>' + esc(entry[2]) + '</h3><p>' + esc(entry[3]) + '</p></div></a>';
+  }).join('');
+  var destination = user?.role === 'admin' ? ['admin', 'Адміністрування'] :
+    user?.role === 'teacher' ? ['teacher', 'Панель учителя'] : ['diary', 'Мій щоденник'];
+  return '<section class="hero"><div class="hero-text-container"><h1>Lyceum N21</h1><p>Житомирський міський ліцей №21. Портал ліцею: розклад, оцінки, вчителі та новини в одному вікні браузера.</p>' +
+    '<div class="hero-actions">' + link(user ? '#/' + destination[0] : '#/auth', user ? destination[1] : 'Увійти до щоденника') +
+    link('#/schedule', 'Розклад дзвінків') + link('#/history', 'Історія ліцею') + '</div></div></section>' +
+    '<p class="promo-showcase">Навігація порталом: оберіть розділ або скористайтеся пошуком. Оцінки, домашні завдання та розклад зібрано в окремій вкладці «Щоденник».</p>' +
+    '<section class="nav-panel"><div class="nav-panel-head"><h2>Що вас цікавить?</h2>' +
+    '<input class="cg-search" id="navSearch" type="search" placeholder="Пошук за розділами: оцінки, меню, вакансії" aria-label="Пошук за розділами порталу"></div>' +
+    '<div class="filter-tabs" role="group" aria-label="Категорії розділів">' +
+    Object.keys(NAV_CATS).map(function (key) { return '<button class="ftab" type="button" data-category-filter="' + key + '">' + esc(NAV_CATS[key]) + '</button>'; }).join('') +
+    '</div><div class="cards" id="portalCards">' + items + '</div><p id="emptyCards" class="muted" hidden>Розділів не знайдено.</p></section>' +
+    card('Новини та оголошення ліцею', '<div id="newsList"></div>' + actions([['#/news', 'Усі актуальні новини']])) +
+    card('Ліцей у цифрах', rows([['Рік заснування', SCHOOL.founded], ['Учителів за даними АІКОМ', SCHOOL.teachers], ['Максимальний бал у 5–9 класах', 12]]));
+}
+
+function filterCards() {
+  var search = document.getElementById('navSearch');
+  if (!search) return;
+  var query = search.value.trim().toLowerCase();
+  var visible = 0;
+  document.querySelectorAll('[data-category-filter]').forEach(function (button) {
+    var active = button.dataset.categoryFilter === navFilter;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
   });
-  var tabs = NAV_CATS.map(function (c) {
-    return '<button class="ftab' + (navFilter === c.id ? ' active' : '') + '" type="button" data-nav-filter="' +
-      esc(c.id) + '">' + esc(c.label) + '<span class="ftab-count">' + catCount(c.id) + '</span></button>';
-  }).join('');
-  var grid = cards.length
-    ? '<div class="cards">' + cards.map(navCardHtml).join('') + '</div>'
-    : '<p class="card-note">За запитом «' + esc(navQuery) + '» розділів не знайдено. Спробуйте інше слово, наприклад «розклад», «оцінки» або «контакти».</p>';
-  var user = currentUser();
-  var action = user
-    ? '<a class="btn-dark" href="#/diary">' + ic('star') + '<span>Відкрити щоденник</span></a>' +
-      '<a class="btn-dark btn-ghost-dark" href="#/schedule">' + ic('clock') + '<span>Розклад ' + esc(user.klass || 'ліцею') + '</span></a>'
-    : '<a class="btn-dark" href="#/auth">' + ic('login') + '<span>Увійти до щоденника</span></a>' +
-      '<a class="btn-dark btn-ghost-dark" href="#/schedule">' + ic('clock') + '<span>Розклад дзвінків</span></a>';
-  var stats = [
-    [SCHOOL.founded, 'рік заснування'],
-    [SCHOOL.students, 'здобувачів освіти'],
-    [SCHOOL.classes, 'класів'],
-    [SCHOOL.staff, 'працівників'],
-    [SCALE_MAX, 'максимальний бал']
-  ].map(function (s) {
-    return '<div class="stat-chip"><b>' + esc(String(s[0])) + '</b><span>' + esc(s[1]) + '</span></div>';
-  }).join('');
-
-  return '<section class="hero"><div class="hero-text-container">' + flashHtml() +
-    '<h1>Lyceum N21</h1>' +
-    '<p>' + esc(SCHOOL.full) + '. Портал ліцею: розклад, оцінки, вчителі та новини в одному вікні браузера.</p>' +
-    '<div class="hero-actions">' + action +
-    '<a class="btn-dark btn-ghost-dark" href="#/history">' + ic('book') + '<span>Історія ліцею</span></a></div>' +
-    '</div></section>' +
-    '<section class="promo-showcase"><h2>Навігація порталом: оберіть розділ або скористайтеся пошуком. ' +
-    'Оцінки, домашні завдання та розклад зібрано в окремій вкладці «Щоденник».</h2></section>' +
-    '<section class="nav-panel"><div class="nav-panel-head"><h3>' + ic('search') + '<span>Що вас цікавить?</span></h3>' +
-    '<input class="cg-search" id="navSearch" type="search" placeholder="Пошук по розділах: оцінки, меню, вакансії" ' +
-    'aria-label="Пошук по розділах порталу" value="' + esc(navQuery) + '" autocomplete="off"></div>' +
-    '<div class="keys-filter-bar"><div class="filter-tabs" role="group" aria-label="Категорії розділів">' + tabs + '</div>' +
-    '<span class="small muted">' + cards.length + ' з ' + NAV_CARDS.length + ' розділів</span></div>' + grid +
-    '</section>' +
-    '<section class="reviews-box"><div class="reviews-box-head">' + ic('news', 'ic-sm') +
-    '<span>Новини та оголошення ліцею</span></div>' +
-    '<div class="reviews-viewport"><div class="reviews-track" id="newsTrack"></div></div></section>' +
-    '<section class="admin-stats">' + stats + '</section>';
+  document.querySelectorAll('#portalCards .card').forEach(function (item) {
+    item.hidden = (navFilter !== 'all' && item.dataset.category !== navFilter) || !item.dataset.search.includes(query);
+    if (!item.hidden) visible++;
+  });
+  document.getElementById('emptyCards').hidden = visible > 0;
 }
 
-/* ---------- історія ліцею ---------- */
 function historyPage() {
-  var timeline = DIRECTORS.map(function (d) {
-    return '<div class="tl-item"><p class="tl-years">' + esc(d.years) + '</p>' +
-      '<p class="tl-name">' + esc(d.name) + '</p><p class="tl-note">' + esc(d.note) + '</p></div>';
-  }).join('');
-  var facts = HISTORY_FACTS.map(function (f) {
-    return '<div class="row-line"><dt>' + esc(f.year) + '</dt><dd>' + esc(f.text) + '</dd></div>';
-  }).join('');
-
-  return '<section class="page-wide">' + breadcrumbHtml('history') +
-    '<div class="legal-card"><h1>Біографія ліцею</h1>' +
-    '<p class="legal-updated">Дані взято з офіційного сайту закладу та відкритого реєстру (ЄДРПОУ ' + esc(SCHOOL.edrpou) + ').</p>' +
-    '<p>Ліцей відлік історії веде з 1962 року, коли наказом обласного відділу освіти було відкрито школу №21 у Житомирі. ' +
-    'За десятиліття заклад змінив кілька назв і приміщень, у 2017 році отримав статус ліцею та сучасний корпус із гімназією.</p>' +
-    '<h2>Директорський склад</h2>' +
-    '<p>За весь час ліцей очолювали шестеро керівників. Кожен із них залишив слід у розвитку матеріальної бази та профільного навчання.</p>' +
-    '<div class="timeline">' + timeline + '</div>' +
-    '<h2>Хронологія подій</h2>' +
-    '<dl class="row-list">' + facts + '</dl>' +
-    '<h2>Сучасний ліцей</h2>' +
-    '<div class="grid-2">' +
-    '<div class="info-card"><h3>' + ic('cap') + '<span>Навчання</span></h3><ul>' +
-    '<li>Базова середня освіта: паралелі 5–9 класів, усього ' + esc(SCHOOL.classes) + ' класів.</li>' +
-    '<li>Навчальний план: шість уроків у 5–6 класах і сім уроків у 7–9 класах щодня.</li>' +
-    '<li>Профіль закладу: ' + esc(SCHOOL.language) + '.</li>' +
-    '<li>Оцінювання 12-бальне, семестрове з підсумком у кінці року.</li>' +
-    '<li>Державна підсумкова атестація завершує базову освіту у 9 класі.</li></ul></div>' +
-    '<div class="info-card"><h3>' + ic('users') + '<span>Людський склад</span></h3><ul>' +
-    '<li>' + esc(SCHOOL.students) + ' здобувачів освіти та ' + esc(SCHOOL.staff) + ' працівників.</li>' +
-    '<li>Директор: ' + esc(SCHOOL.director) + ', ' + esc(SCHOOL.directorNote) + '.</li>' +
-    '<li>Педагоги вищої та першої категорії, окремі кабінети для кожного предмета.</li>' +
-    '<li>Практичний психолог, соціальний педагог та медичний кабінет працюють щодня.</li></ul></div>' +
-    '<div class="info-card"><h3>' + ic('spark') + '<span>Інфраструктура</span></h3><ul>' +
-    '<li>Два навчальні корпуси, оновлена спортивна зала та харчоблок.</li>' +
-    '<li>Медіатека, кабінети фізики, хімії, інформатики та робототехніки.</li>' +
-    '<li>Гуртки: HK Unicorn Squad, мовний клуб, хор, медіацентр, спортивні секції.</li></ul></div>' +
-    '<div class="info-card"><h3>' + ic('pin') + '<span>Адреса</span></h3><ul>' +
-    '<li>' + esc(SCHOOL.address) + '.</li>' +
-    '<li>' + esc(SCHOOL.district) + '.</li>' +
-    '<li>Приймальня: ' + esc(SCHOOL.phone) + ', ' + esc(SCHOOL.email) + '.</li>' +
-    '<li>Офіційний сайт закладу: ' + esc(SCHOOL.site) + '.</li></ul></div>' +
-    '</div>' +
-    '<div class="hero-actions"><a class="btn-dark" href="#/teachers">' + ic('users') + '<span>Педагогічний склад</span></a>' +
-    '<a class="btn-dark btn-ghost-dark" href="#/news">' + ic('news') + '<span>Новини ліцею</span></a></div>' +
-    '</div></section>';
+  return heading('Біографія ліцею', 'Школу № 21 у Житомирі відкрито у 1962 році. Сьогодні це комунальний ліцей із початковою школою та гімназією.') +
+    card('Директорський склад', '<div class="timeline">' + DIRECTORS.map(function (director) {
+      return '<div class="tl-item"><p class="tl-years">' + esc(director[0]) + '</p><p class="tl-name">' + esc(director[1]) +
+        '</p><p class="tl-note">' + esc(director[2]) + '</p></div>';
+    }).join('') + '</div>') +
+    card('Сучасний ліцей', rows([['Тип закладу', 'Ліцей з початковою школою та гімназією'],
+      ['Підпорядкування', 'Департамент освіти Житомирської міської ради'], ['Мова навчання', 'Українська'],
+      ['ЄДРПОУ', SCHOOL.edrpou], ['Учителів за даними АІКОМ', SCHOOL.teachers], ['Адреса', SCHOOL.address], ['Директор', SCHOOL.director]]));
 }
 
-/* ---------- учням ---------- */
-/* Тривалість перерви після i-го урока рахується з графіка дзвінків */
-function breakAfter(i) {
-  var next = BELL[i + 1];
-  return next ? toMinutes(next.start) - toMinutes(BELL[i].end) : 0;
-}
-
-function studentsPage() {
-  var day = BELL.map(function (b, i) {
-    var mins = breakAfter(i);
-    return '<div class="row-line"><dt>' + b.n + '-й урок</dt><dd>' + esc(b.start) + ' до ' + esc(b.end) +
-    '. ' + (mins ? 'Перерва ' + mins + ' хвилин.' : 'Останній дзвінок о ' + esc(b.end) + '.') + '</dd></div>';
-  }).join('');
-  var rules = [
-    ['Правила для учнів', 'Приходити за десять хвилин до дзвінка, мати підручники та зошити з собою, бережно ставитися до майна закладу. Пропуск уроків повідомляється класному керівнику в перший день.'],
-    ['Одяг та форма', 'Діловий стиль: светр або сорочка темного кольору, взуття на змінну підошву. Форму для фізичної культури видають у спортивній залі.'],
-    ['Харчування', 'Гарячі сніданки о 10:35–10:55 та обід після п’ятого уроку о 12:45–13:05. Пільгове харчування оформлюється через класного керівника.'],
-    ['Безпека під час тривоги', 'За сигналу повітряної тривоги учні йдуть до найближчого укриття з класним керівником, список присутніх звіряється на місці.'],
-    ['Поведінка у мережі', 'Пароль від порталів ліцею не передається навіть однокласникам, особисті дані не публікуються у чатах.']
-  ];
-  var rulesHtml = rules.map(function (r, i) {
-    return '<details class="row"><summary><span class="row-main"><b>' + esc(r[0]) + '</b></span>' +
-      '<span class="row-sign">розгорнути ' + ic('arrow', 'ic-sm') + '</span></summary>' +
-      '<div class="row-body"><p>' + esc(r[1]) + '</p></div></details>';
-  }).join('');
-
-  return '<section class="page-wide">' + breadcrumbHtml('students') + flashHtml() +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('cap') + '<span>Базова середня освіта</span></p>' +
-    '<h1 class="page-title">Учням ліцею</h1>' +
-    '<p class="page-sub">Пам’ятки, режим дня, атестація, підтримка психолога та гуртки. Усі розділи зібрано списками, ' +
-    'щоб швидко знайти потрібне.</p></div>' +
-    '<div class="select-line"><a class="btn-dark" href="#/diary">' + ic('star') + '<span>Мій щоденник</span></a></div></div>' +
-
-    '<div class="card-panel" id="schedule-note"><h2>' + ic('clock') + '<span>Режим навчального дня</span></h2>' +
-    '<p>Уроки йдуть з 8:00 до 14:50. У 5–6 класів шість уроків, з 7 класу сім уроків щодня. ' +
-    'Розклад дзвінків однаковий для всіх паралелей.</p>' +
-    '<div class="row-list">' + day + '</div></div>' +
-
-    '<div class="card-panel" id="safety"><h2>' + ic('shield') + '<span>Пам’ятки та правила</span></h2>' +
-    '<div class="row-list">' + rulesHtml + '</div></div>' +
-
-    '<div class="card-panel" id="dpa"><h2>' + ic('trophy') + '<span>Державна підсумкова атестація</span></h2>' +
-    '<p>ДПА завершує базову середню освіту у 9 класі. Перелік предметів визначено навчальним планом, вибору немає.</p>' +
-    '<div class="row-list">' + ATTEST[9].subjects.map(function (s) {
-      return '<div class="row-line"><dt>' + esc(s) + '</dt><dd>оцінка за 12-бальною шкалою, разом із річною оцінкою з предмета.</dd></div>';
-    }).join('') + '</div>' +
-    '<div class="entry-actions"><a class="btn-dark btn-sm" href="#/students:help">' + ic('life') + '<span>Підтримка психолога перед атестацією</span></a>' +
-    '<a class="btn-dark btn-sm btn-ghost-dark" href="#/schedule">' + ic('calendar') + '<span>Графік уроків</span></a></div></div>' +
-
-    '<div class="card-panel" id="help"><h2>' + ic('life') + '<span>Психолог, медкабінет і соціальний педагог</span></h2>' +
-    '<p>Фахівці працюють щодня, консультація безкоштовна та конфіденційна. Звернутися можна напряму або через класного керівника.</p>' +
-    '<div class="row-list">' + TEACHERS.filter(function (t) { return t.dept === 'support'; }).map(function (t) {
-      return '<div class="row-line"><dt>' + esc(t.role) + '</dt><dd>' + esc(t.name) + ', ' + esc(t.room) + '. ' + esc(t.duty) + '. ' +
-        '<a class="abtn abtn-sm" href="tel:' + esc(telHref(t.phone)) + '">' + ic('phone', 'ic-sm') + '<span>' + esc(t.phone) + '</span></a></dd></div>';
-    }).join('') +
-    '<div class="row-line"><dt>Медичний кабінет</dt><dd>каб. 110, працює з 8:00 до 15:00, екстрена допомога викликається через приймальню.</dd></div>' +
-    '</div></div>' +
-
-    '<div class="card-panel" id="gurki"><h2>' + ic('spark') + '<span>Гуртки та секції</span></h2>' +
-    '<p>Запис через класного керівника або керівника гуртка, заняття безкоштовні. Початок після останнього дзвінка.</p>' +
-    '<div class="row-list">' + GURKIV.map(function (g) {
-      return '<div class="row-line"><dt>' + esc(g.t) + '</dt><dd>' + esc(g.d) + '</dd></div>';
-    }).join('') + '</div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('star') + '<span>Як користуватися щоденником</span></h2>' +
-    '<ul><li>Зареєструйтеся у розділі «Вхід і реєстрація».</li>' +
-    '<li>На вкладці «Щоденник» оберіть свій клас, без нього перелік предметів порожній.</li>' +
-    '<li>Там само видно бали з кожного предмета, середній бал та домашні завдання.</li>' +
-    '<li>Оцінки виставляє вчитель у власній панелі, зміна балів зберігається в цьому браузері.</li></ul>' +
-    '<div class="entry-actions"><a class="btn-dark btn-sm" href="#/auth">' + ic('login') + '<span>Створити профіль</span></a>' +
-    '<a class="btn-dark btn-sm btn-ghost-dark" href="#/diary">' + ic('star') + '<span>Відкрити щоденник</span></a></div></div>' +
-    '</section>';
-}
-
-/* ---------- вчителі ---------- */
-function teacherRow(t) {
-  var duty = t.subject
-    ? 'Посада: ' + t.role + '. Викладає предмет: ' + t.subject
-    : 'Посадові обов’язки: ' + t.duty;
-  return '<details class="row"><summary><span class="row-main">' +
-    '<b>' + esc(t.name) + '</b>' +
-    '<span class="cfg-title">' + esc(t.subject || t.role) + '</span></span>' +
-    '<span class="row-sign">' + esc(t.room) + ' ' + ic('arrow', 'ic-sm') + '</span></summary>' +
-    '<div class="row-body"><p>' + esc(duty) + '. Категорія: ' + esc(t.cat) + '. Кабінет: ' + esc(t.room) + '.</p>' +
-    '<div class="entry-actions">' +
-    '<a class="abtn abtn-sm" href="tel:' + esc(telHref(t.phone)) + '">' + ic('phone', 'ic-sm') +
-    '<span>' + esc(t.phone) + '</span></a>' +
-    '<a class="abtn abtn-sm" href="mailto:' + esc(SCHOOL.email) + '?subject=Питання%20до%20' + esc(encodeURIComponent(t.name)) + '">' +
-    ic('mail', 'ic-sm') + '<span>Написати через приймальню</span></a></div></div></details>';
+function curatorsCard() {
+  return card('Класні керівники', '<ul class="curator-list" tabindex="0" aria-label="Класні керівники за класами">' + CLASSES.map(function (klass) {
+      return '<li><strong>' + esc(klass) + '</strong><span>' + esc(CLASS_CURATORS[klass]) + '</span></li>';
+    }).join('') + '</ul>', 'curators');
 }
 
 function teachersPage() {
-  var query = teacherQuery.trim().toLowerCase();
-  var list = TEACHERS.filter(function (t) {
-    if (teacherFilter !== 'all' && t.dept !== teacherFilter) return false;
-    if (!query) return true;
-    return (t.name + ' ' + t.role + ' ' + (t.subject || '') + ' ' + (t.duty || '')).toLowerCase().indexOf(query) > -1;
-  });
-  var tabs = TEACHER_DEPTS.map(function (d) {
-    var count = d.id === 'all' ? TEACHERS.length : TEACHERS.filter(function (t) { return t.dept === d.id; }).length;
-    return '<button class="ftab' + (teacherFilter === d.id ? ' active' : '') + '" type="button" data-teacher-filter="' +
-      esc(d.id) + '">' + esc(d.label) + '<span class="ftab-count">' + count + '</span></button>';
-  }).join('');
-  var rows = list.length
-    ? '<div class="row-list">' + list.map(teacherRow).join('') + '</div>'
-    : '<p class="card-note">Нікого не знайдено за запитом «' + esc(teacherQuery) + '». Оберіть іншу методичну комісію або спростіть пошук.</p>';
-  var admin = TEACHERS.filter(function (t) { return t.dept === 'admin'; });
-
-  return '<section class="page-wide">' + breadcrumbHtml('teachers') +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('users') + '<span>Педагогічна рада</span></p>' +
-    '<h1 class="page-title">Вчителі та працівники ліцею</h1>' +
-    '<p class="page-sub">' + TEACHERS.length + ' імен: адміністрація, вчителі-предметники та фахівці. ' +
-    'Оцінки з предметів вносить лише вчитель-предметник, адміністрація навчальний журнал не веде.</p></div></div>' +
-    '<div class="keys-filter-bar"><div class="filter-tabs" role="group" aria-label="Методичні комісії">' + tabs + '</div>' +
-    '<input class="admin-search" id="teacherSearch" type="search" placeholder="Пошук: прізвище або предмет" ' +
-    'aria-label="Пошук педагогів" value="' + esc(teacherQuery) + '" autocomplete="off"></div>' + rows +
-
-    '<div class="card-panel" id="admin"><h2>' + ic('briefcase') + '<span>Адміністрація та графік прийому</span></h2>' +
-    '<p>Звертатися до заступників можна за попереднім записом через приймальню. Графік прийому директора наведено нижче.</p>' +
-    '<div class="row-list">' + admin.map(function (t) {
-      return '<div class="row-line"><dt>' + esc(t.role) + '</dt><dd>' + esc(t.name) + '. ' + esc(t.duty) + '. ' + esc(t.room) + '.</dd></div>';
-    }).join('') + '</div>' +
-    '<div class="row-list">' +
-    '<div class="row-line"><dt>Директор</dt><dd>' + esc(SCHOOL.director) + ', ' + esc(SCHOOL.directorNote) + '.</dd></div>' +
-    '<div class="row-line"><dt>Прийом громадян</dt><dd>' + esc(SCHOOL.reception) + '.</dd></div>' +
-    '<div class="row-line"><dt>Графік роботи</dt><dd>' + esc(SCHOOL.hours) + '.</dd></div>' +
-    '<div class="row-line"><dt>Приймальня</dt><dd>' + esc(SCHOOL.phone) + ', ' + esc(SCHOOL.email) + '.</dd></div></div>' +
-    '<div class="entry-actions"><a class="btn-dark btn-sm" href="#/contacts">' + ic('pin') + '<span>Усі контакти</span></a></div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('door') + '<span>Відкриті вакансії</span></h2>' +
-    '<div class="row-list">' +
-    [['Вчитель англійської мови', 'ставка 1,0: вища освіта за фахом, розмовний рівень не нижчий C1'],
-     ['Вчитель інформатики та робототехніки', 'ставка 0,5: досвід роботи з Arduino та Scratch'],
-     ['Практичний психолог', 'ставка 1,0: вища освіта з психології, бажана підготовка з кризової підтримки']]
-      .map(function (v) {
-        return '<div class="row-line"><dt>' + esc(v[0]) + '</dt><dd>' + esc(v[1]) + '. Резюме надсилайте на ' +
-          '<a href="mailto:' + esc(SCHOOL.email) + '">' + esc(SCHOOL.email) + '</a>.</dd></div>';
-      }).join('') + '</div></div></section>';
+  return heading('Вчителі та працівники ліцею', 'Педагогічний склад і графік прийому адміністрації.') +
+    card('Адміністрація та графік прийому', rows(ADMINISTRATION.map(function (entry) { return [entry[1], entry[0]]; })) +
+      rows([['Прийом громадян', SCHOOL.reception], ['Графік роботи', SCHOOL.hours], ['Приймальня', SCHOOL.phone + ', ' + SCHOOL.email]]), 'admin') +
+    card('Відкриті вакансії', '<p>Щоб дізнатися про наявні вакансії або подати резюме, напишіть до приймальні на ' + esc(SCHOOL.email) + '.</p>') + curatorsCard();
 }
 
-/* ---------- розклад ---------- */
-function schedulePage() {
-  var user = currentUser();
-  var klass = scheduleClass || (user && user.klass) || CLASSES[2];
-  var grade = classGrade(klass);
-  var per = lessonsPerDay(grade);
-  var week = buildWeek(klass);
-  var chips = CLASSES.map(function (c) {
-    return '<button class="abtn' + (c === klass ? ' on' : '') + '" type="button" data-class-chip="' + esc(c) + '">' +
-      esc(c) + '<span class="ftab-count">' + lessonsPerDay(classGrade(c)) + ' уроків</span></button>';
-  }).join('');
-  var bell = BELL.slice(0, per).map(function (b, i) {
-    var mins = breakAfter(i);
-    return '<div class="cfg-row lesson-row" data-lesson="' + b.n + '"><div class="cfg-info">' +
-      '<div class="cfg-top"><span class="cfg-author">' + b.n + '-й урок</span>' +
-      '<span class="cfg-title">' + esc(b.start) + ' до ' + esc(b.end) + '</span></div></div></div>' +
-      (i < per - 1 ? '<div class="break-row" role="img" aria-label="Перерва ' + mins + ' хвилин">' + mins + '</div>' : '');
-  }).join('');
-  var days = week.map(function (list, i) {
-    var lessons = list.map(function (s, n) {
-      return '<div class="row-line"><dt>' + (n + 1) + '-й урок, ' + esc(BELL[n].start) + '</dt><dd>' +
-        '<b>' + esc(s.name) + '</b>. ' + esc(shortTeacher(s.teacher)) + ', каб. ' + esc(s.room) + '.</dd></div>';
-    }).join('');
-    return '<details class="row"' + (i === 0 ? ' open' : '') + '><summary><span class="row-main"><b>' + esc(DAYS[i]) +
-      '</b><span class="cfg-title">' + list.length + ' уроків</span></span>' +
-      '<span class="row-sign">розклад ' + ic('arrow', 'ic-sm') + '</span></summary>' +
-      '<div class="row-body"><div class="row-list">' + lessons + '</div></div></details>';
-  }).join('');
-
-  return '<section class="page-wide">' + breadcrumbHtml('schedule') +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('clock') + '<span>' + esc(klass) + ' клас</span></p>' +
-    '<h1 class="page-title">Розклад дзвінків та уроків</h1>' +
-    '<p class="page-sub">Дзвінки однакові для всіх: початок о 8:00, останній дзвінок о 14:50. ' +
-    'У 5–6 класів шість уроків, з 7 класу сім уроків щодня.</p></div>' +
-    '<div class="select-line">' + (user && user.klass ?
-      '<a class="btn-dark btn-sm" href="#/diary">' + ic('star') + '<span>Мій щоденник</span></a>' :
-      '<a class="btn-dark btn-sm" href="#/auth">' + ic('login') + '<span>Увійти</span></a>') + '</div></div>' +
-    nowStripHtml() +
-    '<div class="keys-filter-bar"><div class="filter-tabs" role="group" aria-label="Класи">' + chips + '</div>' +
-    '<span class="small muted">Модельний тижневий план, побудований за навчальним планом ' + esc(klass) + ' класу.</span></div>' +
-    '<div class="card-panel"><h2>' + ic('bell') + '<span>Розклад дзвінків ' + esc(klass) + ' класу</span></h2>' +
-    '<p class="small muted">Урок триває 45 хвилин. Число між уроками це перерва у хвилинах.</p>' +
-    '<div class="cfg-list">' + bell + '</div></div>' +
-    '<div class="card-panel"><h2>' + ic('calendar') + '<span>Тижневий план</span></h2>' +
-    '<div class="row-list">' + days + '</div>' +
-    '<p class="small muted">Точний розклад вашого класу видає адміністрація на початку семестру та у групі Human.ua.</p></div>' +
-    '</section>';
+function contactsPage() {
+  var contacts = [['Адреса', SCHOOL.address], ['Район', 'Корольовський район, м. Житомир'], ['Приймальня', SCHOOL.phone],
+    ['Електронна пошта', SCHOOL.email], ['ЄДРПОУ', SCHOOL.edrpou],
+    ['Графік роботи', SCHOOL.hours], ['Прийом громадян', SCHOOL.reception], ['Директор', SCHOOL.director]];
+  return heading('Контакти ліцею', 'Напишіть або зателефонуйте до приймальні. З питаннями свого класу звертайтеся до класного керівника.') +
+    card('Реквізити та зв’язок', rows(contacts) + actions([['tel:' + SCHOOL.phoneRaw, 'Зателефонувати'], ['mailto:' + SCHOOL.email, 'Написати листа']]) +
+      '<button class="abtn" type="button" data-action="copy-contacts">Скопіювати реквізити</button><p role="status" id="copyStatus"></p>') +
+    card('Як дістатися', '<p>Ліцей розташований на вулиці Святослава Ріхтера, 6-а, у Житомирі.</p>' +
+      actions([['https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(SCHOOL.address), 'Прокласти маршрут']])) +
+    card('Куди звертатися далі', rows([['Департамент освіти Житомирської міської ради', '(0412) 47-03-94'],
+      ['Гаряча лінія міста', '15-80 або (0412) 48-14-81'],
+      ['Питання щодо HUMAN', 'Служба підтримки в особистому кабінеті платформи.']])) + curatorsCard();
 }
 
-/* ---------- новини та події ---------- */
-function newsPage() {
-  var items = NEWS.map(function (n) {
-    return '<details class="row"><summary><span class="row-main">' +
-      '<span class="pill pill-days">' + esc(n.tag) + '</span><b>' + esc(n.title) + '</b></span>' +
-      '<span class="row-sign">' + esc(n.date) + ' ' + ic('arrow', 'ic-sm') + '</span></summary>' +
-      '<div class="row-body"><p>' + esc(n.text) + '</p></div></details>';
-  }).join('');
-  var events = EVENTS.map(function (e) {
-    return '<div class="row-line"><dt>' + esc(e.date) + '<br><span class="pill pill-audit">' + esc(e.kind) + '</span></dt>' +
-      '<dd><b>' + esc(e.title) + '</b><br>' + esc(e.time) + '. ' + esc(e.note) + '</dd></div>';
-  }).join('');
-
-  return '<section class="page-wide">' + breadcrumbHtml('news') + flashHtml() +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('news') + '<span>' + todayLabel(new Date()) + '</span></p>' +
-    '<h1 class="page-title">Новини та календар подій</h1>' +
-    '<p class="page-sub">Оголошення адміністрації, результати олімпіад, найближчі збори та заходи. ' +
-    'Розгорніть потрібну новину, щоб прочитати повністю.</p></div>' +
-    '<div class="select-line"><a class="btn-dark btn-sm" href="#/dining">' + ic('bowl') + '<span>Меню їдальні</span></a></div></div>' +
-    '<div class="card-panel"><h2>' + ic('calendar') + '<span>Найближчі події</span></h2>' +
-    '<div class="row-list">' + events + '</div>' +
-    '<p class="small muted">Збори та заходи оголошуються через класних керівників, зміни з’являються тут першими.</p></div>' +
-    '<div class="card-panel"><h2>' + ic('news') + '<span>Останні новини</span></h2>' +
-    '<div class="row-list">' + items + '</div></div></section>';
+function studentsPage() {
+  var rules = [
+    ['Правила для учнів', 'Якщо перший урок о 8:00, приходьте до 7:50. Беріть із собою підручники й зошити та бережіть майно ліцею. Про заплановану відсутність завчасно повідомте класного керівника.'],
+    ['Одяг та форма', 'Ліцей рекомендує охайний повсякденний одяг. Перед фізкультурою переодягніться у спортивну форму та перевзуйтеся у спортивне взуття.'],
+    ['Харчування', 'Меню на день та умови пільгового харчування можна уточнити у класного керівника або в приймальні.'],
+    ['Безпека під час тривоги', 'Під час повітряної тривоги прямуйте до укриття разом з учителем і залишайтеся зі своїм класом.'],
+    ['Поведінка в мережі', 'Зберігайте пароль у таємниці. Перш ніж поширювати особисті дані або фото однокласників, запитайте їхньої згоди.']
+  ];
+  return heading('Учням ліцею', 'Пам’ятки, режим дня, атестація, підтримка психолога та гуртки. Усі розділи зібрано списками, щоб швидко знайти потрібне.') +
+    card('Режим навчального дня', '<p>Перша зміна починається о 8:00, заняття четвертих класів — о 13:05. Між шостим і сьомим уроками першої зміни перерва триває 15 хвилин, з 13:50 до 14:05.</p>' +
+      actions([['#/schedule', 'Розклад уроків і дзвінків']]), 'schedule-note') +
+    card('Пам’ятки та правила', '<div class="row-list">' + rules.map(function (item) {
+      return '<details class="row"><summary><b class="row-main">' + esc(item[0]) + '</b></summary><p class="row-body">' + esc(item[1]) + '</p></details>';
+    }).join('') + '</div>', 'safety') +
+    card('Державна підсумкова атестація', '<p>Умови проведення ДПА у випускних класах залежать від навчального року. Предмети, строки й порядок підготовки уточнюйте у класного керівника.</p>', 'dpa') +
+    card('Психолог, медкабінет і соціальний педагог', rows([
+      ['Практичний психолог', 'Зверніться, якщо вас турбують стосунки з однолітками, тривога або труднощі в навчанні.'],
+      ['Соціальний педагог', 'Допомагає учням і родинам із питаннями підтримки та адаптації.'],
+      ['Медичний кабінет', 'Якщо під час уроку погіршилося самопочуття, повідомте вчителя.']
+    ]) + '<p>Як зв’язатися з фахівцем, підкаже приймальня за номером ' + esc(SCHOOL.phone) + '.</p>', 'help') +
+    card('Гуртки та секції', '<p>На заняттях HK Unicorn Squad дівчата віком 8–11 років збирають моделі й випробовують їх у команді. Заняття в ліцеї заплановано на четвер з 16:00 до 17:30. Запис та наявність місць уточнюйте у керівника гуртка.</p>', 'gurki') +
+    card('Як користуватися щоденником', '<ol><li>Зареєструйтеся у розділі «Вхід і реєстрація» та оберіть свій клас.</li>' +
+      '<li>Відкрийте «Щоденник», щоб переглянути оцінки з кожного предмета, середній бал і домашні завдання.</li>' +
+      '<li>Оцінки виставляє вчитель у власній панелі. У розділі «Розклад» ви побачите уроки свого класу.</li></ol>' +
+      actions([['#/auth', 'Створити профіль'], ['#/diary', 'Відкрити щоденник']]));
 }
 
-/* ---------- вигляд ліцею ---------- */
-var GALLERY = [
-  { src: 'assets/photos/liceum-facade.jpg', title: 'Головний фасад', text: 'Чотириповерховий корпус ліцею з боку вулиці Святослава Ріхтера: центральний вхід і двір перед ним.' },
-  { src: 'assets/photos/liceum-entrance.jpg', title: 'Вхід і подвір’я', text: 'Центральний вхід та алея до нього влітку: огорожа, дерева й майданчик перед дверима.' }
-];
-
-function galleryPage() {
-  var tiles = GALLERY.map(function (photo) {
-    return '<figure class="photo-card"><a class="photo-link" href="' + esc(photo.src) + '" target="_blank" rel="noopener">' +
-      '<img src="' + esc(photo.src) + '" alt="' + esc(photo.title) + ' ліцею №21" loading="lazy" decoding="async"></a>' +
-      '<figcaption><b>' + esc(photo.title) + '</b><span>' + esc(photo.text) + '</span></figcaption></figure>';
-  }).join('');
-
-  return '<section class="page-wide">' + breadcrumbHtml('gallery') +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('palette') + '<span>Фотогалерея</span></p>' +
-    '<h1 class="page-title">Вигляд ліцею</h1>' +
-    '<p class="page-sub">Будівля, центральний вхід і подвір’я Житомирського міського ліцею №21. ' +
-    'Натисніть на фото, щоб відкрити його повністю.</p></div>' +
-    '<div class="select-line"><a class="btn-dark btn-sm" href="#/contacts">' + ic('pin') + '<span>Як дістатися</span></a></div></div>' +
-    '<div class="photo-grid">' + tiles + '</div>' +
-    '<div class="card-panel"><h2>' + ic('info') + '<span>Про фото</span></h2>' +
-    '<p class="small muted">Світлини показують головний фасад та центральний вхід. Нові фотографії корпусів, ' +
-    'спортивної зали й кабінетів додає адміністратор порталу.</p></div></section>';
+function admissionsPage() {
+  return heading('Зарахування до ліцею', 'Прийом учнів, документи та форми навчання.') +
+    card('Перелік документів', '<p>Подайте заяву до приймальні. Підготуйте свідоцтво про народження дитини або інший документ, що посвідчує її особу. Для підтвердження проживання на території обслуговування закладу підготуйте відповідний документ.</p>') +
+    card('Форми навчання', rows([['Очна форма', 'Навчання у корпусі ліцею за розкладом.'], ['Сімейна освіта', 'Родина організовує навчання, ліцей проводить оцінювання.'],
+      ['Індивідуальна форма', 'Умови переходу та графік консультацій родина узгоджує із закладом.']])) +
+    card('Заява: зразок тексту', '<p>Директору Ліцею № 21 міста Житомира<br>від ____________________</p><p>Прошу зарахувати мою дитину ____________________ до ____ класу на __________ навчальний рік.</p><p>Дата ____________ Підпис ____________</p>') +
+    card('Строки та питання', '<p>Кількість вільних місць і строки подання документів уточнюйте у приймальні. Телефон ' + esc(SCHOOL.phone) + '.</p>');
 }
-
-/* ---------- їдальня ---------- */
-var MENU_CATEGORIES = ['Закуска', 'Суп', 'Друга гаряча страва', 'Напій', 'Хліб або випічка'];
 
 function diningPage() {
-  var day = MENU[diningDay] || MENU[0];
-  var tabs = MENU.map(function (m, i) {
-    return '<button class="ftab' + (i === diningDay ? ' active' : '') + '" type="button" data-dining-day="' + i + '">' +
-      esc(m.day) + '</button>';
-  }).join('');
-  var rows = day.items.map(function (item, i) {
-    return '<div class="row-line"><dt>' + esc(MENU_CATEGORIES[i] || 'Страва') + '</dt>' +
-      '<dd><b>' + esc(item[0]) + '</b><br>' + esc(item[1]) + ' за порцію.</dd></div>';
-  }).join('');
-  var total = day.items.reduce(function (sum, item) {
-    return sum + Number(String(item[1]).replace(/\D/g, ''));
-  }, 0);
-
-  return '<section class="page-wide">' + breadcrumbHtml('dining') +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('bowl') + '<span>Харчоблок ліцею</span></p>' +
-    '<h1 class="page-title">Меню їдальні на тиждень</h1>' +
-    '<p class="page-sub">Сніданок о 10:35–10:55, гарячий обід після п’ятого уроку о 12:45–13:05. ' +
-    'Ціни вказано за порцію, оплата готівкою або через класного керівника.</p></div></div>' +
-    '<div class="keys-filter-bar"><div class="filter-tabs" role="group" aria-label="Дні тижня">' + tabs + '</div>' +
-    '<span class="small muted">' + esc(day.day) + ': ' + day.items.length + ' позицій, повний обід ' + total + ' ₴</span></div>' +
-    '<div class="card-panel"><h2>' + ic('bowl') + '<span>' + esc(day.day) + '</span></h2>' +
-    '<div class="row-list">' + rows + '</div></div>' +
-    '<div class="panel-cols">' +
-    '<div class="card-panel"><h3>' + ic('shield') + '<span>Пільгове харчування</span></h3><ul>' +
-    '<li>Учні з багатодітних сімей та внутрішньо переміщених осіб.</li>' +
-    '<li>Діти військовослужбовців та учні, які перебувають на опіці.</li>' +
-    '<li>Документи подаються класному керівнику, наказ видається на чверть.</li>' +
-    '<li>Гарячий сніданок для 5–6 класів безкоштовний за проєктом «Сніданок у школі».</li></ul></div>' +
-    '<div class="card-panel"><h3>' + ic('life') + '<span>Поради щодо здорового харчування</span></h3><ul>' +
-    '<li>Повноцінний сніданок удома за 30 хвилин до уроків.</li>' +
-    '<li>Вода замість солодкої газованої води, фрукти замість чипсів.</li>' +
-    '<li>Овочі або фрукти щодня, риба двічі на тиждень.</li>' +
-    '<li>Їсти повільно, не перекушувати на перерві цукерками.</li></ul></div>' +
-    '<div class="card-panel"><h3>' + ic('phone') + '<span>Як замовити та скасувати</span></h3><ul>' +
-    '<li>Заява на тиждень через класного керівника до п’ятниці.</li>' +
-    '<li>Скасування не пізніше доби, інакше страва списується.</li>' +
-    '<li>Алергії та дієти узгоджуються із медичним кабінетом, каб. 110.</li></ul></div>' +
-    '</div></section>';
+  return heading('Меню їдальні на тиждень', 'Зразок меню з попередньої версії порталу. Страви та ціни на сьогодні уточнюйте в їдальні.') +
+    MENU.map(function (day) { return card(day.day, rows(day.items)); }).join('') +
+    card('Пільгове харчування', '<p>З питаннями про пільги й документи звертайтеся до класного керівника або в приймальню.</p>') +
+    card('Поради щодо здорового харчування', '<p>Обирайте воду, додавайте до раціону овочі та фрукти. Питання щодо алергій і спеціального харчування завчасно обговоріть із працівниками закладу.</p>');
 }
 
-/* ---------- зарахування ---------- */
-function admissionsPage() {
-  var docs = [
-    ['Заява батьків або самих учнів', 'заповнюється у приймальні або за зразком нижче'],
-    ['Копія свідоцтва про народження', 'двох сторінок достатньо'],
-    ['Медична довідка форми 063/о', 'щеплення та група стану здоров’я'],
-    ['Довідка про навчання в попередній школі', 'виписка з додатком та оцінками'],
-    ['Дві фотографії 3×4', 'для перепустки та учнівського квитка'],
-    ['Копія ідентифікаційного коду', 'за наявності']
-  ];
-  var forms = [
-    ['Оочна форма', 'Навчання у корпусі ліцею за розкладом, факультативи та гуртки після уроків.'],
-    ['Індивідуальна форма', 'За заявою батьків, індивідуальний графік, контрольні роботи разом із класом.'],
-    ['Сімейна освіта', 'Родина бере навчання на себе, ліцей надає проміжне та підсумкове оцінювання.'],
-    ['Дистанційна форма', 'Призначається наказом під час воєнного стану або через тривалу хворобу учня, уроки на платформі ' + SCHOOL.platform + '.']
-  ];
-
-  return '<section class="page-wide">' + breadcrumbHtml('admissions') +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('door') + '<span>Прийом учнів</span></p>' +
-    '<h1 class="page-title">Зарахування до ліцею</h1>' +
-    '<p class="page-sub">Ліцей приймає учнів до 5–9 класів на базову середню освіту. Вступних іспитів немає, ' +
-    'вибір предметів або профілів навчальний план не передбачає.</p></div>' +
-    '<div class="select-line"><a class="btn-dark btn-sm" href="#/contacts">' + ic('phone') + '<span>Зателефонувати до приймальні</span></a></div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('check') + '<span>Перелік документів</span></h2>' +
-    '<div class="row-list">' + docs.map(function (d) {
-      return '<div class="row-line"><dt>' + esc(d[0]) + '</dt><dd>' + esc(d[1]) + '</dd></div>';
-    }).join('') + '</div>' +
-    '<p class="small muted">Наказ про зарахування видається протягом п’яти робочих днів після подання всіх документів.</p></div>' +
-
-    '<div class="card-panel"><h2>' + ic('cap') + '<span>Форми навчання</span></h2>' +
-    '<div class="row-list">' + forms.map(function (f) {
-      return '<div class="row-line"><dt>' + esc(f[0]) + '</dt><dd>' + esc(f[1]) + '</dd></div>';
-    }).join('') + '</div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('pen') + '<span>Заява: зразок тексту</span></h2>' +
-    '<div class="row-body"><p>Директору Житомирського міського ліцею №21<br>Реминець С. О.<br>від ' +
-    'Коваленко Ірини Миколаївни, мешканки м. Житомир<br>тел. +380 67 000-00-00</p>' +
-    '<p><b>ЗАЯВА</b></p>' +
-    '<p>Прошу зарахувати мою доньку, Коваленко Софію Іванівну, 2013 року народження, до 5 класу ' +
-    'Житомирського міського ліцею №21 у 2026/2027 навчальному році, денна форма здобуття освіти.</p>' +
-    '<p>Додатки: копія свідоцтва про народження, медична довідка форми 063/о, довідка про навчання, дві фотографії 3×4.</p>' +
-    '<p class="muted">Дата ____________ Підпис ____________</p></div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('info') + '<span>Строки та питання</span></h2>' +
-    '<div class="row-list">' +
-    '<div class="row-line"><dt>Прийом документів</dt><dd>з 2 червня по 31 серпня, понеділок і середа з 9:00 до 16:00.</dd></div>' +
-    '<div class="row-line"><dt>Наказ про зарахування</dt><dd>протягом п’яти робочих днів після подання всіх документів.</dd></div>' +
-    '<div class="row-line"><dt>Місця</dt><dd>кількість учнів у класі обмежено 30 особами, резервний список ведуть щотижня.</dd></div>' +
-    '<div class="row-line"><dt>Гаряча лінія освіти</dt><dd>0 800 500 142, дзвінок безкоштовний.</dd></div>' +
-    '</div></div></section>';
+function galleryPage() {
+  return heading('Вигляд ліцею', 'Будівля, центральний вхід і подвір’я Ліцею № 21 міста Житомира. Натисніть на фото, щоб відкрити його повністю.') +
+    '<div class="gallery-grid">' + [
+      ['assets/photos/liceum-facade.jpg', 'Головний фасад', 'Чотириповерховий корпус ліцею з боку вулиці Святослава Ріхтера: центральний вхід і двір перед ним.'],
+      ['assets/photos/liceum-entrance.jpg', 'Вхід і подвір’я', 'Центральний вхід та алея до нього влітку: огорожа, дерева й майданчик перед дверима.']
+    ].map(function (photo) {
+      return '<figure class="gallery-card"><a href="' + photo[0] + '" target="_blank" rel="noopener"><img src="' + photo[0] +
+        '" alt="' + photo[1] + '" loading="lazy"></a><figcaption><strong>' + photo[1] + '</strong><p>' + photo[2] + '</p></figcaption></figure>';
+    }).join('') + '</div>' + actions([['#/contacts', 'Як дістатися']]);
 }
 
-/* ---------- контакти ---------- */
-function contactsPage() {
-  var rows = [
-    ['Адреса', SCHOOL.address],
-    ['Район', SCHOOL.district],
-    ['Приймальня', SCHOOL.phone],
-    ['Електронна пошта', SCHOOL.email],
-    ['Офіційний сайт', SCHOOL.site],
-    ['ЄДРПОУ', SCHOOL.edrpou],
-    ['Графік роботи', SCHOOL.hours],
-    ['Прийом громадян', SCHOOL.reception],
-    ['Директор', SCHOOL.director]
-  ].map(function (r) {
-    return '<div class="row-line"><dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd></div>';
-  }).join('');
-
-  return '<section class="page-wide">' + breadcrumbHtml('contacts') + flashHtml() +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('pin') + '<span>Як нас знайти</span></p>' +
-    '<h1 class="page-title">Контакти ліцею</h1>' +
-    '<p class="page-sub">Напишіть або зателефонуйте у приймальню, питання конкретного класу краще адресувати ' +
-    'класному керівнику. Перелік телефонів педагогів є у розділі «Вчителі».</p></div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('phone') + '<span>Реквізити та зв’язок</span></h2>' +
-    '<div class="row-list">' + rows + '</div>' +
-    '<div class="entry-actions">' +
-    '<a class="btn-dark btn-sm" href="tel:' + esc(SCHOOL.phoneRaw) + '">' + ic('phone', 'ic-sm') + '<span>Подзвонити ' + esc(SCHOOL.phone) + '</span></a>' +
-    '<a class="btn-dark btn-sm" href="mailto:' + esc(SCHOOL.email) + '">' + ic('mail', 'ic-sm') + '<span>Написати листа</span></a>' +
-    '<button class="btn-dark btn-sm btn-ghost-dark" type="button" data-action="copy-contacts">' +
-    ic('check', 'ic-sm') + '<span>Скопіювати реквізити</span></button></div></div>' +
-
-    '<div class="panel-cols">' +
-    '<div class="card-panel"><h3>' + ic('pin') + '<span>Як дістатися</span></h3><ul>' +
-    '<li>Автобуси 3, 7 та 14 до зупинки «Ліцей №21», три хвилини пішки.</li>' +
-    '<li>Тролейбус 2, вихід до вулиці Святослава Ріхтера.</li>' +
-    '<li>Власний автомобіль: паркування з боку спортивної зали, в’їд з вулиці.</li>' +
-    '<li>Вхід для відвідувачів через центральний тамбур, перепустка не потрібна до 15:00.</li></ul></div>' +
-    '<div class="card-panel"><h3>' + ic('shield') + '<span>Куди звертатися далі</span></h3><ul>' +
-    '<li>Гаряча лінія Житомирської міської ради: 15-82.</li>' +
-    '<li>Гаряча лінія освіти: 0 800 500 142.</li>' +
-    '<li>Служба підтримки платформи Human.ua: у особистому кабінеті.</li>' +
-    '<li>Екстрені ситуації: 101, 102, 103, 104.</li></ul></div>' +
-    '<div class="card-panel"><h3>' + ic('users') + '<span>Класні керівники</span></h3><ul>' +
-    CLASSES.map(function (c) {
-      var t = curatorFor(c);
-      return '<li>' + esc(c) + ' клас: ' + esc(t.name) + ', ' + esc(t.room) + '.</li>';
-    }).join('') +
-    '<li>Повний перелік телефонів у розділі <a href="#/teachers">Вчителі</a>.</li></ul></div>' +
-    '</div></section>';
+function newsPage() {
+  return heading('Новини ліцею', 'Розгорніть потрібну новину, щоб прочитати більше.') +
+    card('Останні новини', '<div id="newsList"></div>');
 }
 
-/* ---------- вхід і реєстрація ---------- */
+// Предмети розподіляються на п’ять днів за орієнтовним тижневим навантаженням.
+function sampleWeek(klass) {
+  var hours = GRADE_HOURS[classGrade(klass)];
+  var week = DAYS.map(function () { return []; });
+  var offset = klass.charCodeAt(klass.length - 1) % DAYS.length;
+  Object.entries(hours).sort(function (a, b) { return b[1] - a[1]; }).forEach(function (entry) {
+    for (var count = 0; count < entry[1]; count++) {
+      var candidates = week.map(function (lessons, index) {
+        var copies = lessons.filter(function (name) { return name === entry[0]; }).length;
+        return { index: index, weight: copies * 100 + lessons.length * 10 + (index + DAYS.length - offset) % DAYS.length };
+      }).sort(function (a, b) { return a.weight - b.weight; });
+      var index = candidates[0].index;
+      week[index].push(entry[0]);
+      offset = (index + 1) % DAYS.length;
+    }
+  });
+  return week.map(function (lessons) {
+    return lessons.sort(function (a, b) { return Number(a === 'Фізична культура') - Number(b === 'Фізична культура'); });
+  });
+}
+
+function scheduleSlots(klass) {
+  return classGrade(klass) === 4 ? BELL.slice(5) : BELL;
+}
+
+function timeline(slots, names) {
+  return '<ol class="schedule-timeline">' + slots.map(function (slot, index) {
+    var next = slots[index + 1];
+    var length = minutes(slot[1]) - minutes(slot[0]);
+    var label = names ? names[index] || 'Вільне вікно' : (index + 1) + '-й урок';
+    var item = '<li class="schedule-lesson" data-start="' + slot[0] + '" data-end="' + slot[1] + '"><span class="schedule-time">' +
+      slot[0] + '–' + slot[1] + '</span><div><strong>' + esc(label) + '</strong><span>' + length + ' хв</span></div></li>';
+    if (next && minutes(next[0]) > minutes(slot[1])) {
+      item += '<li class="schedule-break" data-start="' + slot[1] + '" data-end="' + next[0] + '"><span class="schedule-time">' +
+        slot[1] + '–' + next[0] + '</span><div><strong>Перерва</strong><span>' + (minutes(next[0]) - minutes(slot[1])) + ' хв</span></div></li>';
+    }
+    return item;
+  }).join('') + '</ol>';
+}
+
+function schedulePage() {
+  var pupil = user?.role === 'pupil';
+  var klass = pupil ? user.klass : scheduleClass;
+  var grade = classGrade(klass);
+  var posted = CLASS_SCHEDULES[klass];
+  var week = posted || sampleWeek(klass);
+  var lessons = week[scheduleDay];
+  var bell = scheduleSlots(klass);
+  var duration = grade === 1 ? 35 : grade <= 4 ? 40 : 45;
+  var slots = bell.slice(0, lessons.length).map(function (slot) {
+    return [slot[0], timeString(minutes(slot[0]) + duration)];
+  });
+  return heading('Розклад', posted ? klass + ' клас' : klass + ' клас · Орієнтовний тижневий план') +
+    '<div class="schedule-layout"><section class="card-panel schedule-main"><div class="schedule-head">' +
+    '<div><h2>Уроки</h2><p class="muted">' + (posted ? 'Навчальний план класу' : 'Зразок за типовою програмою МОН') + '</p></div>' +
+    (pupil ? '<span class="schedule-class">' + esc(klass) + ' клас</span>' :
+      '<label class="select-line">Клас <select id="scheduleClass">' + classesHtml(klass) + '</select></label>') +
+    '</div><div class="schedule-days" role="group" aria-label="Дні навчального тижня">' + DAYS.map(function (name, index) {
+      return '<button type="button" data-day="' + index + '" aria-pressed="' + (index === scheduleDay) +
+        '" aria-label="' + esc(name) + '"><span class="day-full">' + esc(name) + '</span><span class="day-short" aria-hidden="true">' +
+        ['Пн', 'Вт', 'Ср', 'Чт', 'Пт'][index] + '</span></button>';
+    }).join('') + '</div><h3 class="schedule-day-title">' + esc(DAYS[scheduleDay]) + '</h3>' +
+    (lessons.length ? timeline(slots, lessons) : '<p class="muted">У цей день уроків немає.</p>') +
+    (posted ? '' : '<p class="schedule-note muted">Фактичний порядок уроків перевіряйте в HUMAN або в класного керівника.</p>' +
+      actions([[SOURCES.humanLogin, 'Увійти в HUMAN']])) +
+    '</section><aside class="card-panel schedule-bells"><h2>Розклад дзвінків</h2><p class="muted">2026/2027 · ' +
+    (grade === 4 ? 'Підзмінок' : 'Перша зміна') + '</p>' + timeline(bell) +
+    (grade <= 4 ? '<p class="schedule-note muted">Офіційна сітка показує час дзвінків. Тривалість занять для цієї паралелі — ' + duration + ' хв.</p>' : '') +
+    '</aside></div>';
+}
+
+function highlightTime() {
+  if (route !== 'schedule') return;
+  var weekday = schoolDay();
+  var now = clock.format(new Date());
+  document.querySelectorAll('.schedule-timeline [data-start]').forEach(function (slot) {
+    var today = slot.closest('.schedule-bells') || weekday === scheduleDay + 1;
+    slot.classList.toggle('is-current', Boolean(today && weekday >= 1 && weekday <= 5 && now >= slot.dataset.start && now < slot.dataset.end));
+  });
+}
+
+function loadingCard() {
+  if (pageError) return card('Дані недоступні', '<p role="alert">' + esc(pageError) +
+    '</p><button class="abtn" type="button" data-action="retry">Повторити</button>');
+  return '<p class="card-panel" role="status">Завантаження…</p>';
+}
+
+function restricted(title) {
+  if (accountStatus === 'loading') return loadingCard();
+  return heading(title) + card(user ? 'Потрібна інша роль' : 'Потрібно увійти',
+    '<p>' + esc(user ? 'Цей розділ недоступний для вашої ролі.' : 'Увійдіть до профілю, щоб відкрити цей розділ.') +
+    '</p>' + actions([[user ? '#/profile' : '#/auth', user ? 'Мій профіль' : 'Вхід і реєстрація']]));
+}
+
+function field(label, name, attributes) {
+  return '<label class="auth-field"><span>' + esc(label) + '</span><input name="' + name + '" ' + attributes + '></label>';
+}
+
+function submit(label) {
+  return '<button class="btn-dark" type="submit">' + esc(label) + '</button><p class="form-message" role="status"></p>';
+}
+
+var phoneAttrs = 'type="tel" autocomplete="tel" placeholder="+380 67 123-45-67" required';
+var passwordAttrs = 'type="password" autocomplete="current-password" required';
+var newPasswordAttrs = 'type="password" autocomplete="new-password" minlength="6" maxlength="160" required';
+
 function authPage() {
-  var active = currentUser();
-  if (active) {
-    return '<section class="workspace">' + breadcrumbHtml('auth') + flashHtml() +
-      '<div class="card-panel"><h2>' + ic('check') + '<span>Профіль уже активний</span></h2>' +
-      '<p>' + esc(active.fullName) + ' (' + (active.role === 'teacher' ? 'вчитель' : 'учень') + ') увійшов у цьому браузері. ' +
-      'Ще один профіль можна створити лише після виходу.</p>' +
-      '<div class="entry-actions">' +
-      '<a class="btn-dark btn-sm" href="#/diary">' + ic('star', 'ic-sm') + '<span>Щоденник</span></a>' +
-      '<a class="btn-dark btn-sm btn-ghost-dark" href="#/profile">' + ic('gear', 'ic-sm') + '<span>Профіль</span></a>' +
-      (active.role === 'teacher'
-        ? '<a class="btn-dark btn-sm btn-ghost-dark" href="#/teacher">' + ic('pen', 'ic-sm') + '<span>Панель вчителя</span></a>' : '') +
-      '<button class="btn-dark btn-sm btn-danger" type="button" data-action="logout">' + ic('logout', 'ic-sm') +
-      '<span>Вийти та створити інший профіль</span></button></div></div></section>';
+  if (user) {
+    var cabinet = { pupil: ['#/diary', 'Щоденник'], teacher: ['#/teacher', 'Панель учителя'], admin: ['#/admin', 'Адміністрування'] }[user.role];
+    return heading('Вхід і реєстрація') + card('Профіль уже активний',
+      '<p>' + esc(user.fullName) + ' · ' + esc(ROLE_NAMES[user.role]) + '. Ще один профіль можна створити лише після виходу.</p>' +
+      actions([cabinet, ['#/profile', 'Профіль']]) + '<button class="abtn" type="button" data-action="logout">Вийти та створити інший профіль</button>');
   }
-  var isReg = authMode === 'register';
-  var teacherFields = teacherAccess
-    ? '<div class="auth-field"><label for="fCode">Код доступу педагога <span class="auth-field-hint">видає адміністрація</span></label>' +
-      '<input id="fCode" name="code" type="password" placeholder="код доступу" required autocomplete="off"></div>'
-    : '';
-  var fields = isReg
-    ? '<div class="auth-field"><label for="fName">ПІБ <span class="auth-field-hint">прізвище, ім’я, по батькові</span></label>' +
-      '<input id="fName" name="fullName" type="text" placeholder="Коваленко Андрій Ігорович" required minlength="5" autocomplete="name"></div>' +
-      '<div class="auth-field"><label for="fPhone">Номер телефону</label>' +
-      '<input id="fPhone" name="phone" type="tel" placeholder="+380 67 123-45-67" required autocomplete="tel"></div>' +
-      '<div class="auth-field"><label for="fPass">Пароль <span class="auth-field-hint">щонайменше 6 символів, літери та цифри</span></label>' +
-      '<input id="fPass" name="password" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password"></div>' +
-      '<div class="auth-field"><label for="fPass2">Повторіть пароль</label>' +
-      '<input id="fPass2" name="password2" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password"></div>' +
-      '<button class="auth-teacher-link" type="button" data-teacher-access>' +
+  var register = authMode === 'register';
+  var legacy = false;
+  try { legacy = Boolean(localStorage.getItem('lyceum21_users')); } catch {}
+  return '<section class="auth-wrap"><div class="auth-cloud"><h1>' + (register ? 'Реєстрація' : 'Вхід до порталу') +
+    '</h1><div class="auth-tabs" role="group" aria-label="Вхід або реєстрація">' +
+    '<button class="auth-tab' + (register ? '' : ' active') + '" type="button" data-auth-mode="login" aria-pressed="' + !register + '">Вхід</button>' +
+    '<button class="auth-tab' + (register ? ' active' : '') + '" type="button" data-auth-mode="register" aria-pressed="' + register + '">Реєстрація</button></div>' +
+    (legacy ? '<p class="muted">Профілі попередньої версії зберігалися в браузері. Для спільного кабінету створіть новий профіль.</p>' : '') +
+    '<form class="auth-form" data-form="' + authMode + '">' +
+    (register ? field('ПІБ · прізвище, ім’я, по батькові', 'fullName', 'autocomplete="name" placeholder="Коваленко Андрій Ігорович" minlength="5" maxlength="120" required') : '') +
+    field('Номер телефону', 'phone', phoneAttrs) +
+    field('Пароль', 'password', register ? newPasswordAttrs : passwordAttrs) +
+    (register ? '<p class="small muted">Щонайменше 6 символів, літери та цифри.</p>' +
+      field('Повторіть пароль', 'password2', newPasswordAttrs) +
+      '<button class="auth-teacher-link" type="button" data-action="teacher-access" aria-pressed="' + teacherAccess + '">' +
       (teacherAccess ? 'Звичайна реєстрація учня' : 'Реєстрація для педагога ліцею') + '</button>' +
-      teacherFields
-    : '<div class="auth-field"><label for="fPhone">Номер телефону</label>' +
-      '<input id="fPhone" name="phone" type="tel" placeholder="+380 67 123-45-67" required autocomplete="tel"></div>' +
-      '<div class="auth-field"><label for="fPass">Пароль</label>' +
-      '<input id="fPass" name="password" type="password" placeholder="••••••••" required autocomplete="current-password"></div>';
-
-  return '<section class="auth-wrap"><div class="auth-cloud">' + flashHtml() +
-    '<div class="auth-tabs"><span class="auth-thumb" id="authThumb"></span>' +
-      '<button class="auth-tab' + (isReg ? '' : ' active') + '" type="button" data-auth-tab="login">Вхід</button>' +
-      '<button class="auth-tab' + (isReg ? ' active' : '') + '" type="button" data-auth-tab="register">Реєстрація</button>' +
-    '</div>' +
-    '<div class="auth-error" id="authError" role="alert"></div>' +
-    '<form class="auth-form" id="authForm">' + fields +
-      '<button class="btn-auth" type="submit">' + ic(isReg ? 'cap' : 'login') +
-      '<span>' + (isReg ? 'Створити профіль' : 'Увійти') + '</span></button>' +
-    '</form>' +
-    '<p class="auth-hint">' + (isReg
-      ? (teacherAccess
-        ? 'Реєстрація педагога відкриває панель оцінювання, код доступу видає адміністрація ліцею.'
-        : 'Профіль учня відкриває щоденник. Клас оберете вже у вкладці «Щоденник», дані зберігаються лише в цьому браузері.')
-      : 'Увійти можна за номером телефону та паролем, вказаними під час реєстрації.') + '</p>' +
-    '</div></section>';
-}
-
-/* ---------- профіль і налаштування ---------- */
-function loginNeededHtml(title, text) {
-  return '<section class="auth-wrap"><div class="auth-cloud" style="text-align:center">' +
-    ic('lock', 'ic-lg') +
-    '<h2 style="margin:12px 0 6px;font-size:1.25rem">' + esc(title) + '</h2>' +
-    '<p class="small muted">' + esc(text) + '</p>' +
-    '<a class="dashboard-button btn-link" href="#/auth">' + ic('login', 'ic-sm') + '<span>Увійти або створити профіль</span></a>' +
-    '</div></section>';
+      (teacherAccess ? field('Код доступу педагога · видає адміністрація', 'code', 'type="password" placeholder="Код доступу" autocomplete="off" maxlength="24" required') :
+        '<label class="auth-field"><span>Ваш клас</span><select name="klass" required>' + classesHtml('', true) + '</select></label>') : '') +
+    submit(register ? 'Створити профіль' : 'Увійти') + '</form><p class="small muted">' +
+    (register ? (teacherAccess ? 'Реєстрація педагога відкриває панель оцінювання, код доступу видає адміністрація ліцею.' :
+      'Профіль учня відкриває щоденник. Оберіть свій клас під час реєстрації. Надалі клас може змінити адміністрація.') :
+      'Увійти можна за номером телефону та паролем, вказаними під час реєстрації.') + '</p></div></section>';
 }
 
 function profilePage() {
-  var user = currentUser();
-  if (!user) return loginNeededHtml('Профіль доступний після входу', 'У профілі видно ваш клас і роль, тут змінюється пароль.');
-  var isTeacher = user.role === 'teacher';
-
-  return '<section class="workspace">' + breadcrumbHtml('profile') + flashHtml() +
-    '<div class="card-panel"><div class="account-head"><div class="account-avatar" aria-hidden="true">' +
-    esc(initials(user.fullName)) + '</div><div class="account-copy">' +
-    '<strong>' + esc(user.fullName) + '</strong>' +
-    '<span><span class="role-badge ' + (isTeacher ? 'role-teacher' : 'role-curator') + '">' + (isTeacher ? 'Вчитель' : 'Учень') + '</span>' +
-    esc(user.klass ? user.klass + ' клас' : 'Клас не вибрано') + '</span>' +
-    '<span class="muted">' + esc(fmtPhone(user.phone)) + ', профіль створено ' + esc(user.created) + '</span></div></div>' +
-    '<div class="entry-actions">' +
-    (isTeacher
-      ? '<a class="btn-dark btn-sm" href="#/teacher">' + ic('pen') + '<span>Панель вчителя</span></a>'
-      : '<a class="btn-dark btn-sm" href="#/diary">' + ic('star') + '<span>Мій щоденник</span></a>') +
-    '<a class="btn-dark btn-sm btn-ghost-dark" href="#/schedule">' + ic('calendar') + '<span>Розклад</span></a></div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('lock') + '<span>Зміна пароля</span></h2>' +
-    '<form id="passForm"><div class="panel-cols">' +
-    '<div class="auth-field"><label for="fOld">Поточний пароль</label>' +
-    '<input id="fOld" name="old" type="password" required autocomplete="current-password" placeholder="••••••••"></div>' +
-    '<div class="auth-field"><label for="fNew">Новий пароль <span class="auth-field-hint">літери та цифри, від 6 символів</span></label>' +
-    '<input id="fNew" name="new" type="password" required minlength="6" autocomplete="new-password" placeholder="••••••••"></div>' +
-    '</div><div class="entry-actions"><button class="btn-dark btn-sm" type="submit">' + ic('check', 'ic-sm') +
-    '<span>Зберегти пароль</span></button></div>' +
-    '<div class="auth-error" id="passError" role="alert"></div></form></div>' +
-
-    '<div class="card-panel"><h2>' + ic('info') + '<span>Безпека та дані</span></h2>' +
-    '<ul><li>Пароль зберігається як незворотний відбиток, у сховищі браузера лежить лише він.</li>' +
-    '<li>Оцінки, відмітки домашніх завдань та тема також не виходять за межі цього пристрою.</li>' +
-    '<li>На спільному комп’ютері виходьте з профілю кнопкою «Вийти».</li>' +
-    '<li>Видалення профілю прибирає його з цього браузера, виставлені оцінки залишаються в журналі класу.</li></ul>' +
-    '<div class="entry-actions">' +
-    '<button class="btn-dark btn-sm btn-ghost-dark" type="button" data-action="logout">' + ic('logout', 'ic-sm') + '<span>Вийти з профілю</span></button>' +
-    '<button class="btn-dark btn-sm btn-danger" type="button" data-action="delete-account">' + ic('close', 'ic-sm') +
-    '<span>Видалити профіль</span></button></div></div>' +
-    '</section>';
+  if (!user) return restricted('Мій профіль');
+  var destination = { pupil: ['#/diary', 'Мій щоденник'], teacher: ['#/teacher', 'Панель учителя'], admin: ['#/admin', 'Адміністрування'] }[user.role];
+  return heading('Мій профіль', user.fullName) +
+    card('Обліковий запис', rows([['Роль', ROLE_NAMES[user.role]], ['Телефон', user.phone]].concat(user.klass ? [['Клас', user.klass]] : [])) +
+      (user.klass ? '<p class="muted">Щоб змінити клас, зверніться до адміністрації.</p>' : '') +
+      actions([destination, ['#/schedule', 'Розклад']]) + '<button class="abtn" type="button" data-action="logout">Вийти</button>') +
+    card('Зміна пароля', '<form class="compact-form" data-form="password">' + field('Поточний пароль', 'oldPassword', passwordAttrs) +
+      field('Новий пароль', 'password', newPasswordAttrs) + submit('Оновити пароль') + '</form>') +
+    (user.role === 'admin' ? '' : '<details class="card-panel"><summary>Видалити профіль</summary><form class="compact-form" data-form="delete-account">' +
+      '<p>Видалення профілю учня також видаляє його оцінки.</p>' + field('Підтвердьте паролем', 'password', passwordAttrs) +
+      submit('Видалити профіль') + '</form></details>');
 }
 
-/* ---------- щоденник ---------- */
-function diaryRowHtml(row, klass) {
-  var marks = row.list.length
-    ? row.list.map(function (v) { return markHtml(v); }).join('')
-    : '<span class="mark mark-empty">балів ще немає</span>';
-  var avg = row.list.length ? markHtml(Math.round(row.average), 'mark-year') : '<span class="mark mark-empty">–</span>';
-  return '<details class="row"><summary><span class="row-main"><b>' + esc(row.name) + '</b>' +
-    '<span class="cfg-title">' + esc(shortTeacher(row.teacher)) + ', каб. ' + esc(row.room) + '</span></span>' +
-    '<span class="row-sign">' + ic(row.icon, 'ic-sm') + ' ' + row.list.length + '</span></summary>' +
-    '<div class="row-body"><div class="marks">' + marks + '</div>' +
-    '<div class="row-list" style="margin-top:10px">' +
-    '<div class="row-line"><dt>Середній бал</dt><dd>' + avg + ' з ' + row.list.length + ' ' +
-    plural(row.list.length, ['оцінки', 'оцінок', 'оцінок']) + ' за 12-бальною шкалою.</dd></div>' +
-    '<div class="row-line"><dt>Як виставлено</dt><dd>' + (row.updated
-      ? 'внесені вчителем, ' + esc(row.updated)
-      : 'оцінок з цього предмета ще немає, їх вносить ' + esc(shortTeacher(row.teacher)) + ' у панелі вчителя.') + '</dd></div>' +
-    '</div></div></details>';
-}
-
-function homeworkHtml(user) {
-  var done = loadHomeworkDone();
-  var list = homeworkFor(user);
-  if (!list.length) return '<p class="card-note">Домашні завдання з’являться, щойно буде вибрано клас у щоденнику.</p>';
-  return '<div class="cfg-list">' + list.map(function (h) {
-    var isDone = !!done[h.id];
-    return '<div class="cfg-row' + (isDone ? ' done' : '') + '">' +
-      '<div class="cfg-info"><div class="cfg-top"><span class="cfg-author">' + esc(h.subject) + '</span>' +
-      '<span class="cfg-title">здоати до ' + esc(h.due) + '</span></div>' +
-      '<div class="cfg-desc">' + esc(h.text) + '</div></div>' +
-      '<div class="cfg-actions"><label class="check"><input type="checkbox" data-hw="' + esc(h.id) + '"' +
-      (isDone ? ' checked' : '') + '><span>виконано</span></label></div></div>';
-  }).join('') + '</div>';
+function markHtml(mark, controls) {
+  var score = mark.score;
+  var tone = score ? (score <= 4 ? 'mark-low' : score <= 8 ? 'mark-mid' : 'mark-top') : 'mark-empty';
+  return '<li class="mark-record"><div>' +
+    (score || mark.level ? '<span title="' + esc(LEVELS[mark.level]) + '" class="mark ' + tone + '">' + esc(score || mark.level) + '</span>' : '') +
+    '<time datetime="' + esc(mark.created) + '">' + esc(schoolDate.format(new Date(mark.created))) + '</time>' +
+    (mark.klass && mark.klass !== user.klass ? '<span class="muted small">' + esc(mark.klass) + ' клас</span>' : '') +
+    (mark.comment ? '<p>' + esc(mark.comment) + '</p>' : '') + '</div>' +
+    (controls && mark.editable ? '<div class="entry-actions"><button class="abtn" type="button" data-edit-mark="' + mark.id +
+      '">Редагувати</button><button class="abtn" type="button" data-delete-mark="' + mark.id + '">Видалити</button></div>' : '') + '</li>';
 }
 
 function diaryPage() {
-  var user = currentUser();
-  if (!user) return loginNeededHtml('Щоденник доступний після входу', 'Оцінки бачить лише учень, який увійшов у свій профіль.');
-  if (user.role === 'teacher') {
-    return '<section class="workspace">' + breadcrumbHtml('diary') +
-      '<div class="card-panel"><h2>' + ic('star') + '<span>Щоденник для вчителя</span></h2>' +
-      '<p>Ваш профіль ' + esc(user.fullName) + '. ' +
-      'Оцінки переглядаються та редагуються в панелі вчителя, там само можна додати бал учню.</p>' +
-      '<div class="entry-actions"><a class="btn-dark btn-sm" href="#/teacher">' + ic('pen') + '<span>Панель вчителя</span></a>' +
-      '<a class="btn-dark btn-sm btn-ghost-dark" href="#/schedule">' + ic('calendar') + '<span>Розклад</span></a></div></div></section>';
-  }
-  var klass = user.klass;
-  if (!klass) {
-    return '<section class="workspace">' + breadcrumbHtml('diary') + flashHtml() +
-      '<div class="card-panel"><h2>' + ic('star') + '<span>Клас ще не вибрано</span></h2>' +
-      '<p>Щоденник показує предмети саме вашого класу. Оберіть його тут, у профіль можна зазирнути пізніше.</p>' +
-      '<div class="select-line" style="margin-top:12px"><label class="small muted" for="diaryKlass">Мій клас</label>' +
-      '<select id="diaryKlass" data-select="diary-klass"><option value="">Не обрано</option>' +
-      CLASSES.map(function (c) { return '<option value="' + esc(c) + '">' + esc(c) + ' клас</option>'; }).join('') +
-      '</select></div></div></section>';
-  }
-  var rows = pupilRows(klass, user.fullName);
-  var sum = diarySummary(rows);
-  var att = ATTEST[classGrade(klass)];
-  var known = pupilsOfClass(klass).some(function (p) { return p.name === user.fullName; });
-  var curator = curatorFor(klass);
-  var meterWidth = Math.round((sum.average / SCALE_MAX) * 100);
-
-  return '<section class="workspace">' + breadcrumbHtml('diary') + flashHtml() + nowStripHtml() +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('star') + '<span>Електронний щоденник, ' + esc(klass) + ' клас</span></p>' +
-    '<h1 class="page-title">' + esc(user.fullName) + '</h1>' +
-    '<p class="page-sub">Оцінки, які вніс вчитель у панелі, та поточні домашні завдання. ' +
-    'Річна оцінка формується в кінці навчального року за підсумками двох семестрів.</p></div>' +
-    '<div class="select-line"><label class="small muted" for="diaryKlass">Мій клас</label>' +
-    '<select id="diaryKlass" data-select="diary-klass"><option value="">Не обрано</option>' +
-    CLASSES.map(function (c) {
-      return '<option value="' + esc(c) + '"' + (c === klass ? ' selected' : '') + '>' + esc(c) + ' клас</option>';
-    }).join('') + '</select>' +
-    '<a class="btn-dark btn-sm btn-ghost-dark" href="#/schedule">' + ic('calendar') + '<span>Розклад</span></a></div></div>' +
-
-    '<div class="panel-cols">' +
-    '<div class="card-panel"><h2>' + ic('trophy') + '<span>Середній бал</span></h2>' +
-    '<div class="summary-value">' + (sum.average ? sum.average.toFixed(1) + ' з ' + SCALE_MAX : 'балів ще немає') + '</div>' +
-    '<div class="meter" title="Середній бал у відсотках від максимального"><i style="width:' + meterWidth + '%"></i></div>' +
-    '<p class="small muted">' + (sum.marks ? esc(levelWord(sum.average)) + '. ' : '') +
-    'Предметів у плані: ' + rows.length +
-    ', з оцінками: ' + sum.filled + '. Всього виставлено ' + sum.marks + ' балів.</p></div>' +
-    '<div class="card-panel"><h2>' + ic('book') + '<span>' + (sum.best ? 'Найкращий предмет' : 'Оцінювання') + '</span></h2>' +
-    (sum.best
-      ? '<div class="summary-value">' + esc(sum.best.name) + ', ' + sum.best.average.toFixed(1) + ' з ' + SCALE_MAX + '</div>' +
-        '<p class="small muted">Його веде ' + esc(shortTeacher(sum.best.teacher)) + ', кабінет ' + esc(sum.best.room) + '.</p>'
-      : '<p class="small muted">Балів поки що немає. Щойно вчитель внесе перший запис, він з’явиться в цьому розділі.</p>') + '</div>' +
-    '<div class="card-panel"><h2>' + ic('pen') + '<span>' + (att ? 'Державна атестація' : 'Підсумкове оцінювання') + '</span></h2>' +
-    (att
-      ? '<ul>' + att.subjects.map(function (s) {
-          var r = rows.filter(function (x) { return x.name === s; })[0];
-          return '<li>' + esc(s) + ': ' + (r && r.list.length ? markHtml(Math.round(r.average)) : 'оцінка не виставлена') + '</li>';
-        }).join('') + '</ul><p class="small muted">Перелік предметів визначено навчальним планом, вибору немає.</p>'
-      : '<p class="small muted">Державна атестація завершує базову освіту у 9 класі. У ' + esc(klass) +
-        ' класі рік закінчується підсумковим оцінюванням з кожного предмета.</p>') + '</div>' +
-    '</div>' +
-
-    '<div class="card-panel"><h2>' + ic('star') + '<span>Оцінки з предметів ' + esc(klass) + ' класу</span></h2>' +
-    (known ? '' : '<p class="small muted">Вашого прізвища поки немає в переліку учнів ' + esc(klass) +
-      ' класу, тому бали порожні. Вчитель внесе їх через панель, і вони з’являться тут.</p>') +
-    '<div class="row-list">' + rows.map(function (r) { return diaryRowHtml(r, klass); }).join('') + '</div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('bell') + '<span>Домашні завдання</span></h2>' +
-    '<p>Відмітка «виконано» зберігається для вашого профілю в цьому браузері.</p>' +
-    homeworkHtml(user) + '</div>' +
-
-    '<div class="card-panel"><h2>' + ic('phone') + '<span>Хто може відповісти на питання</span></h2>' +
-    '<div class="row-list">' +
-    '<div class="row-line"><dt>Класний керівник</dt><dd>' + esc(curator.name) + ', ' + esc(curator.room) + '. ' +
-    '<a class="abtn abtn-sm" href="tel:' + esc(telHref(curator.phone)) + '">' + ic('phone', 'ic-sm') + '<span>' + esc(curator.phone) + '</span></a></dd></div>' +
-    '<div class="row-line"><dt>Заступник директора з НВР</dt><dd>Андрущенко Людмила Петрівна, каб. 302.</dd></div>' +
-    '<div class="row-line"><dt>Практичний психолог</dt><dd>Кобасенко Ірина Юріївна, каб. 116, консультація за бажанням.</dd></div>' +
-    '</div></div></section>';
-}
-
-/* ---------- панель вчителя ---------- */
-function markInputsHtml(key, list, label) {
-  var html = list.map(function (v) {
-    return '<input class="mark-input ' + markTone(v) + '" type="number" min="' + SCALE_MIN + '" max="' + SCALE_MAX +
-      '" step="1" value="' + esc(v) + '" data-entry="' + esc(key) + '" aria-label="' + esc(label) + '">';
+  if (user?.role !== 'pupil') return restricted('Електронний щоденник');
+  var title = heading('Електронний щоденник', user.fullName + ' · ' + user.klass + ' клас');
+  if (!pageData) return title + loadingCard();
+  var grades = pageData.marks;
+  var subjects = Array.from(new Set(classSubjects(user.klass).concat(grades.map(function (mark) { return mark.subject; }))));
+  var numeric = grades.filter(function (mark) { return mark.klass === user.klass && mark.score; });
+  var average = numeric.length ? (numeric.reduce(function (sum, mark) { return sum + mark.score; }, 0) / numeric.length).toLocaleString('uk-UA', { maximumFractionDigits: 1 }) : '—';
+  var diaryRows = subjects.map(function (subject) {
+    var marks = grades.filter(function (mark) { return mark.subject === subject; });
+    return '<details class="row"><summary><span class="row-main"><strong>' + esc(subject) + '</strong></span>' +
+      '<span class="row-sign">' + (marks.length ? marks.length + ' зап.' : 'Записів немає') + '</span></summary>' +
+      '<div class="row-body">' + (marks.length ? '<ul class="mark-records">' + marks.map(function (mark) { return markHtml(mark, false); }).join('') +
+        '</ul>' : '<p class="muted">Учитель ще не додав записів.</p>') + '</div></details>';
   }).join('');
-  if (!list.length) {
-    html = '<input class="mark-input" type="number" min="' + SCALE_MIN + '" max="' + SCALE_MAX + '" step="1" value="" ' +
-      'placeholder="–" data-entry="' + esc(key) + '" aria-label="' + esc(label) + '">';
+  return title + actions([['#/schedule', 'Розклад мого класу']]) +
+    card('Оцінки та відгуки', (classGrade(user.klass) >= 5 ? '<p class="muted">Середній бал у поточному класі <strong>' + esc(average) + '</strong></p>' : '') +
+      '<div class="row-list">' + diaryRows + '</div>') +
+    card('Домашні завдання', homeworkHtml(pageData.homework, false));
+}
+
+function gradeForm(pupil, mark) {
+  var grade = classGrade(journalClass);
+  var choices = grade >= 5 ? Array.from({ length: 12 }, function (_, index) { return index + 1; }) : Object.keys(LEVELS);
+  var label = grade >= 5 ? 'Бал' : 'Рівень';
+  var current = mark?.score || mark?.level || '';
+  var select = grade === 1 || grade === 2 ? '' : '<label><select aria-label="' + label + '" name="' + (grade >= 5 ? 'score' : 'level') +
+    '"' + (grade >= 5 ? ' required' : '') + '><option value="">' + (grade >= 5 ? 'Бал 1–12' : 'Рівень') + '</option>' +
+    choices.map(function (option) {
+      return '<option value="' + option + '"' + (option === current ? ' selected' : '') + '>' + esc(LEVELS[option] || option) + '</option>';
+    }).join('') + '</select></label>';
+  return '<form class="grade-form" data-form="mark" data-pupil="' + esc(pupil.id) + '"' + (mark ? ' data-mark="' + mark.id + '"' : '') + '>' +
+    '<label class="grade-comment' + (grade >= 5 && !mark ? ' optional-comment' : '') + '"><span class="sr-only">Відгук</span>' +
+    '<input name="comment" maxlength="500" placeholder="' + (grade < 3 ? 'Відгук' : 'Відгук за потреби') + '" value="' +
+    esc(mark?.comment) + '"' + (grade < 3 ? ' required' : '') + '></label>' + select +
+    '<button class="btn-dark" type="submit">' + (mark ? 'Зберегти' : 'Додати') + '</button><p class="form-message" role="status"></p></form>';
+}
+
+function journalPage() {
+  if (user?.role !== 'teacher') return restricted('Панель учителя');
+  var subjects = classSubjects(journalClass);
+  if (!subjects.includes(journalSubject)) journalSubject = subjects[0];
+  var filters = '<div class="journal-filters"><label>Клас<select id="journalClass">' + classesHtml(journalClass) + '</select></label>' +
+    '<label>Предмет<select id="journalSubject">' + subjects.map(function (subject) {
+      return '<option' + (subject === journalSubject ? ' selected' : '') + '>' + esc(subject) + '</option>';
+    }).join('') + '</select></label><label>Пошук учня<input id="journalQuery" type="search" value="' + esc(journalQuery) + '"></label></div>';
+  var result = heading('Панель учителя', user.fullName) + card('Журнал', filters);
+  if (!pageData) return result + loadingCard();
+  var pupils = pageData.pupils.slice().sort(function (a, b) { return a.fullName.localeCompare(b.fullName, 'uk'); });
+  var roster = pupils.map(function (pupil) { return journalPupil(pupil, false); }).join('');
+  return result + card('Учні ' + journalClass + ' класу', '<div id="journalPupils">' + roster + '</div><p id="emptyJournal" class="muted" hidden>' +
+    (pupils.length ? 'За цим запитом учнів не знайдено.' : 'У цьому класі ще немає зареєстрованих учнів.') + '</p>') +
+    card('Домашні завдання', '<form class="compact-form" data-form="homework">' +
+      field('Завдання', 'text', 'required maxlength="500"') + field('До якої дати', 'due', 'type="date" required') +
+      submit('Додати завдання') + '</form>' + homeworkHtml(pageData.homework, true));
+}
+
+function journalPupil(pupil, open) {
+  var grades = pageData.marks.filter(function (mark) { return mark.pupilId === pupil.id; });
+  return '<article class="journal-pupil" data-pupil-name="' + esc(pupil.fullName.toLowerCase()) + '"><div class="journal-line">' +
+    '<div><h3>' + esc(pupil.fullName) + '</h3><p class="small muted">' + (grades.length ? grades.length + ' зап.' : 'Записів немає') + '</p></div>' +
+    gradeForm(pupil) + '</div>' + (grades.length ? '<details' + (open ? ' open' : '') + '><summary>Попередні записи</summary><ul class="mark-records">' +
+      grades.map(function (mark) { return markHtml(mark, true); }).join('') + '</ul></details>' : '') + '</article>';
+}
+
+function refreshPupil(pupilId) {
+  var pupil = pageData.pupils.find(function (entry) { return entry.id === pupilId; });
+  var form = document.querySelector('.journal-line [data-pupil="' + pupilId + '"]');
+  if (!pupil || !form) return;
+  var row = form.closest('.journal-pupil');
+  row.outerHTML = journalPupil(pupil, Boolean(row.querySelector('details[open]')));
+  filterPupils();
+  var next = document.querySelector('.journal-line [data-pupil="' + pupilId + '"]');
+  (next?.querySelector('select') || next?.querySelector('input'))?.focus({ preventScroll: true });
+}
+
+function homeworkHtml(homework, teacher) {
+  return homework?.length ? '<ul class="mark-records">' + homework.map(function (task) {
+    return '<li class="mark-record"><div><strong>' + esc(task.subject) + '</strong> <time datetime="' + esc(task.due) + '">до ' +
+      esc(schoolDate.format(new Date(task.due + 'T12:00:00Z'))) + '</time><p>' + esc(task.text) + '</p></div>' +
+      (teacher ? (task.editable ? '<button class="abtn" type="button" data-delete-homework="' + task.id + '">Видалити</button>' : '') :
+        '<label class="homework-check"><input type="checkbox" data-homework-done="' + task.id + '"' + (task.done ? ' checked' : '') + '> Виконано</label>') + '</li>';
+  }).join('') + '</ul>' : '<p class="muted">Завдань поки немає.</p>';
+}
+
+function filterPupils() {
+  var empty = document.getElementById('emptyJournal');
+  if (!empty) return;
+  var visible = 0;
+  document.querySelectorAll('[data-pupil-name]').forEach(function (pupil) {
+    pupil.hidden = !pupil.dataset.pupilName.includes(journalQuery.trim().toLowerCase());
+    if (!pupil.hidden) visible++;
+  });
+  empty.hidden = visible > 0;
+}
+
+function adminPage() {
+  if (user?.role !== 'admin') return restricted('Адміністрування');
+  return heading('Адміністрування') +
+    card('Запрошення вчителя', '<p>Код діє 24 години й підходить для однієї реєстрації на вказаний номер.</p>' +
+      '<form class="compact-form" data-form="invite">' + field('Номер телефону вчителя', 'phone', phoneAttrs) +
+      submit('Згенерувати код') + '<label class="auth-field" id="inviteResult" hidden><span>Код запрошення</span>' +
+      '<input id="inviteCode" readonly></label></form>') +
+    card('Зміна класу учня', '<form class="compact-form" data-form="class">' + field('Номер телефону учня', 'phone', phoneAttrs) +
+      '<label class="auth-field"><span>Новий клас</span><select name="klass" required>' + classesHtml('', true) + '</select></label>' +
+      submit('Змінити клас') + '</form>');
+}
+
+var PAGES = {
+  home: ['Головна', homePage], history: ['Історія ліцею', historyPage], students: ['Учням', studentsPage],
+  teachers: ['Вчителі', teachersPage], schedule: ['Розклад', schedulePage], news: ['Новини', newsPage],
+  dining: ['Харчування', diningPage], admissions: ['Зарахування', admissionsPage], gallery: ['Вигляд ліцею', galleryPage],
+  contacts: ['Контакти', contactsPage], auth: ['Вхід і реєстрація', authPage], profile: ['Профіль', profilePage],
+  diary: ['Щоденник', diaryPage], teacher: ['Панель учителя', journalPage], admin: ['Адміністрування', adminPage],
+  notfound: ['Сторінку не знайдено', function () { return heading('Сторінку не знайдено') + actions([['#/home', 'На головну']]); }]
+};
+
+function redraw() {
+  var page = PAGES[route];
+  app.className = ['home', 'auth'].includes(route) ? '' : 'page-wide';
+  app.innerHTML = page[1]();
+  document.title = page[0] + ' · Lyceum N21';
+  renderNav();
+  filterCards();
+  filterPupils();
+  renderNews();
+  highlightTime();
+}
+
+async function loadPage() {
+  var request = ++revision;
+  pageData = null;
+  pageError = '';
+  redraw();
+  if (route === 'home' || route === 'news') loadNews();
+  var endpoint;
+  if (route === 'diary' && user?.role === 'pupil') endpoint = 'diary';
+  if (route === 'teacher' && user?.role === 'teacher') {
+    endpoint = 'journal?' + new URLSearchParams({ klass: journalClass, subject: journalSubject });
   }
-  return html;
-}
-
-/* Один учень у списку: розгортається у поле, де вчитель ставить бал */
-function panelPupilRow(klass, pupil, subject) {
-  var key = marksKey(klass, pupil.name, subject);
-  var entry = getMarkEntry(klass, pupil.name, subject);
-  var avg = avgOf(entry.list);
-  var count = entry.list.length;
-  return '<details class="row"' + (panelOpenPupil === pupil.name ? ' open' : '') + '><summary><span class="row-main">' +
-    '<b>' + esc(pupil.name) + '</b>' +
-    '<span class="cfg-title">' + (count
-      ? count + ' ' + plural(count, ['бал', 'бали', 'балів']) + ' з предмета ' + esc(subject)
-      : 'балів з предмета ' + esc(subject) + ' ще немає') + '</span></span>' +
-    '<span class="row-sign">' + (count
-      ? markHtml(Math.round(avg)) + ' середній'
-      : ic('pen', 'ic-sm') + ' поставити бал') + '</span></summary>' +
-    '<div class="row-body">' +
-    (count ? '<div class="marks">' + entry.list.map(function (v) { return markHtml(v); }).join('') + '</div>' : '') +
-    '<div class="entry-row" style="margin-top:10px"><label>Бали</label>' +
-    markInputsHtml(key, entry.list, 'Бал учня ' + pupil.name + ' з предмета ' + subject) +
-    '<button class="abtn abtn-sm" type="button" data-action="add-mark" data-entry="' + esc(key) + '">+ бал</button>' +
-    '</div><div class="entry-actions">' +
-    '<button class="btn-dark btn-sm" type="button" data-action="save-entry" data-entry="' + esc(key) + '" data-name="' +
-    esc(pupil.name) + '" data-subject="' + esc(subject) + '">' + ic('check', 'ic-sm') + '<span>Зберегти оцінку</span></button>' +
-    '<button class="btn-dark btn-sm btn-ghost-dark" type="button" data-action="clear-entry" data-entry="' + esc(key) + '" data-name="' +
-    esc(pupil.name) + '">' + ic('close', 'ic-sm') + '<span>Очистити</span></button></div></div></details>';
-}
-
-function teacherPage() {
-  var user = currentUser();
-  if (!user) return loginNeededHtml('Панель вчителя доступна після входу', 'Увійдіть у профіль педагога або створіть його у розділі «Вхід і реєстрація» з кодом доступу.');
-  if (user.role !== 'teacher') {
-    return '<section class="workspace">' + breadcrumbHtml('teacher') +
-      '<div class="card-panel"><h2>' + ic('lock') + '<span>Панель доступна лише вчителям</span></h2>' +
-      '<p>Ваш профіль ' + esc(user.fullName) + ' створено як учнівський. Оцінки виставляє педагог, ' +
-      'а учень бачить результат у щоденнику.</p>' +
-      '<div class="entry-actions"><a class="btn-dark btn-sm" href="#/diary">' + ic('star') + '<span>Мій щоденник</span></a></div></div></section>';
+  if (!endpoint) return;
+  try {
+    var data = await api(endpoint);
+    if (request !== revision) return;
+    pageData = data;
+  } catch (error) {
+    if (request !== revision) return;
+    if (error.status === 401) user = null;
+    else pageError = error.message;
   }
-  var klass = panelKlass;
-  var subjects = [];
-  classSubjects(klass).forEach(function (s) {
-    if (subjects.indexOf(s.name) < 0) subjects.push(s.name);
-  });
-  if (subjects.indexOf(panelSubject) < 0) panelSubject = subjects[0];
-  var query = panelQuery.trim().toLowerCase();
-  var pupils = pupilsOfClass(klass).filter(function (p) {
-    return !query || p.name.toLowerCase().indexOf(query) > -1;
-  });
-  var filled = pupils.filter(function (p) { return getMarkEntry(klass, p.name, panelSubject).list.length > 0; }).length;
-
-  var classList = CLASSES.map(function (c) {
-    var count = pupilsOfClass(c).length;
-    return '<button class="class-row' + (c === klass ? ' on' : '') + '" type="button" data-panel-class="' + esc(c) + '">' +
-      '<span class="class-row-name">' + esc(c) + ' клас</span>' +
-      '<span class="class-row-meta">' + count + ' ' + plural(count, ['учень', 'учні', 'учнів']) + '</span>' +
-      ic('arrow', 'ic-sm') + '</button>';
-  }).join('');
-
-  return '<section class="workspace wide">' + breadcrumbHtml('teacher') + flashHtml() +
-    '<div class="heading-panel"><div><p class="kicker">' + ic('pen') + '<span>' + esc(user.fullName) + '</span></p>' +
-    '<h1 class="page-title">Панель вчителя</h1>' +
-    '<p class="page-sub">Спочатку оберіть клас, потім учня зі списку та впишіть йому бали від 1 до 12. ' +
-    'Записи залишаються в цьому браузері та одразу з’являються в щоденнику учня з таким самим прізвищем і класом.</p></div>' +
-    '<div class="select-line"><a class="btn-dark btn-sm" href="#/diary">' + ic('star') + '<span>Щоденник</span></a></div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('users') + '<span>Класи ліцею</span></h2>' +
-    '<p class="small muted">Оберіть клас — нижче з’явиться список його учнів.</p>' +
-    '<div class="class-list" role="group" aria-label="Класи">' + classList + '</div></div>' +
-
-    '<div class="card-panel"><h2>' + ic('pen') + '<span>Учні ' + esc(klass) + ' класу</span></h2>' +
-    '<div class="select-line">' +
-    '<label class="small muted" for="panelSubject">Предмет</label>' +
-    '<select id="panelSubject" data-select="panel-subject">' +
-    subjects.map(function (s) { return '<option value="' + esc(s) + '"' + (s === panelSubject ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join('') +
-    '</select>' +
-    '<input class="admin-search" id="panelSearch" type="search" placeholder="Пошук учня за прізвищем" ' +
-    'aria-label="Пошук учня" value="' + esc(panelQuery) + '" autocomplete="off"></div>' +
-    '<p class="small muted">' + esc(klass) + ' клас, ' + esc(panelSubject) + ': ' + pupils.length + ' ' +
-    plural(pupils.length, ['учень', 'учні', 'учнів']) + ' у переліку, оцінки мають ' + filled + '.</p>' +
-    '<div class="entry-actions">' +
-    '<button class="btn-dark btn-sm" type="button" data-action="save-all" data-klass="' + esc(klass) + '" data-subject="' + esc(panelSubject) + '">' +
-    ic('check', 'ic-sm') + '<span>Зберегти всі оцінки</span></button>' +
-    '<button class="btn-dark btn-sm btn-danger" type="button" data-action="clear-subject" data-klass="' + esc(klass) + '" data-subject="' + esc(panelSubject) + '">' +
-    ic('close', 'ic-sm') + '<span>Прибрати бали цього предмета</span></button></div>' +
-
-    (pupils.length
-      ? '<div class="row-list">' + pupils.map(function (p) { return panelPupilRow(klass, p, panelSubject); }).join('') + '</div>'
-      : '<p class="card-note">' + (query
-        ? 'У переліку ' + esc(klass) + ' класу немає учня з таким прізвищем.'
-        : 'У переліку ' + esc(klass) + ' класу поки нікого немає. Учень з’явиться тут, коли зареєструється ' +
-          'і обере цей клас у щоденнику.') + '</p>') + '</div>' +
-
-    '</section>';
+  redraw();
 }
 
-/* ---------- 404 ---------- */
-function notFoundPage() {
-  return '<section class="auth-wrap"><div class="auth-cloud" style="text-align:center">' +
-    ic('info', 'ic-lg') +
-    '<h2 style="margin:12px 0 6px;font-size:1.3rem">Сторінку не знайдено</h2>' +
-    '<p class="small muted">За адресою ' + esc(location.hash || '#/') + ' на порталі ліцею нічого немає. ' +
-    'Можливо, розділ перейменовано або посилання втрачено.</p>' +
-    '<a class="dashboard-button btn-link" href="#/home">' + ic('cap', 'ic-sm') + '<span>На головну портал</span></a>' +
-    '<div class="row-list" style="margin-top:14px;text-align:left">' +
-    DRAWER_MAIN.slice(0, 5).map(function (item) {
-      return '<div class="row-line"><dt>' + ic(item.icon, 'ic-sm') + '</dt><dd>' +
-        '<a href="#/' + item.r + '">' + esc(item.label) + '</a></dd></div>';
-    }).join('') + '</div></div></section>';
-}
-
-/* ---------- робота з полями балів ---------- */
-function keyParts(key) {
-  var parts = String(key).split('|');
-  return { klass: parts[0], name: parts[1], subject: parts.slice(2).join('|') };
-}
-
-function setMarkByKey(key, list) {
-  var p = keyParts(key);
-  setMarkEntry(p.klass, p.name, p.subject, list);
-}
-
-function readMarkInputs(key) {
-  var out = [];
-  var bad = 0;
-  Array.prototype.forEach.call(document.querySelectorAll('.mark-input'), function (input) {
-    if (key && input.getAttribute('data-entry') !== key) return;
-    var raw = String(input.value).trim();
-    if (!raw) { input.classList.remove('bad'); return; }
-    var v = Number(raw);
-    if (!isFinite(v) || Math.floor(v) !== v || v < SCALE_MIN || v > SCALE_MAX) {
-      input.classList.add('bad');
-      bad++;
-      return;
-    }
-    input.classList.remove('bad');
-    out.push(v);
-  });
-  return { list: out, bad: bad };
-}
-
-function readAllEntries() {
-  var groups = {};
-  Array.prototype.forEach.call(document.querySelectorAll('.mark-input'), function (input) {
-    var key = input.getAttribute('data-entry');
-    if (!key) return;
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(input);
-  });
-  return groups;
-}
-
-function removeSubjectMarks(klass, subject) {
-  var map = loadMarks() || {};
-  Object.keys(map).forEach(function (key) {
-    var p = keyParts(key);
-    if (p.klass === klass && p.subject === subject) delete map[key];
-  });
-  saveMarks(map);
-}
-
-/* ---------- форми ---------- */
-function formError(id, msg) {
-  var box = document.getElementById(id);
-  if (box) box.textContent = msg || '';
-}
-
-function bindAuth() {
-  var form = document.getElementById('authForm');
-  if (!form) return;
-  form.addEventListener('submit', function (ev) {
-    ev.preventDefault();
-    var data = new FormData(form);
-    var phone = String(data.get('phone') || '').replace(/[^\d+]/g, '');
-    var pass = String(data.get('password') || '');
-    var users = loadUsers();
-
-    if (authMode === 'register') {
-      var fullName = String(data.get('fullName') || '').trim().replace(/\s+/g, ' ');
-      var isTeacher = teacherAccess;
-      if (fullName.split(' ').length < 2) return formError('authError', 'Вкажіть ПІБ повністю: прізвище та ім’я, бажано по батькові.');
-      if (isTeacher && String(data.get('code') || '') !== TEACHER_CODE) return formError('authError', 'Код доступу не підходить, його видає адміністрація ліцею.');
-      if (!/^(\+380|380|0)\d{9}$/.test(phone)) return formError('authError', 'Введіть номер у форматі +380 XXX XXX-XX-XX.');
-      if (pass.length < 6 || !/\d/.test(pass) || !/[a-zа-яєіїґ]/i.test(pass)) return formError('authError', 'Пароль: щонайменше 6 символів, літери та цифри.');
-      if (pass !== String(data.get('password2') || '')) return formError('authError', 'Паролі не збігаються.');
-      if (users.some(function (u) { return u.phone === phone; })) return formError('authError', 'Такий номер уже зареєстровано, увійдіть у профіль.');
-      var id = 'u' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
-      var user = {
-        id: id,
-        fullName: fullName,
-        phone: phone,
-        pass: passHash(phone, pass),
-        role: isTeacher ? 'teacher' : 'pupil',
-        teacherName: '',
-        klass: '',
-        created: new Date().toLocaleString('uk-UA')
-      };
-      users.push(user);
-      saveUsers(users);
-      lsSet(LS_SESSION, id);
-      if (isTeacher) {
-        teacherAccess = false;
-        notice = 'Профіль педагога створено, панель оцінювання відкрита.';
-        noticeKind = 'success';
-        location.hash = '#/teacher';
-      } else {
-        notice = 'Профіль створено. Оберіть свій клас у щоденнику, і з’явиться перелік предметів.';
-        noticeKind = 'success';
-        location.hash = '#/diary';
-      }
-      return;
-    }
-
-    var found = users.filter(function (u) { return u.phone === phone; })[0];
-    if (!found) return formError('authError', 'Профіль з таким номером не знайдено, пройдіть реєстрацію.');
-    if (found.pass !== passHash(phone, pass)) return formError('authError', 'Невірний пароль, спробуйте ще раз.');
-    lsSet(LS_SESSION, found.id);
-    scheduleClass = found.klass || '';
-    if (found.klass) panelKlass = found.klass;
-    notice = 'Ви увійшли як ' + found.fullName + '.';
-    noticeKind = 'success';
-    location.hash = found.role === 'teacher' ? '#/teacher' : '#/diary';
-  });
-}
-
-function bindPasswordForm() {
-  var form = document.getElementById('passForm');
-  if (!form) return;
-  form.addEventListener('submit', function (ev) {
-    ev.preventDefault();
-    var user = currentUser();
-    if (!user) return;
-    var data = new FormData(form);
-    var oldPass = String(data.get('old') || '');
-    var newPass = String(data.get('new') || '');
-    if (passHash(user.phone, oldPass) !== user.pass) return formError('passError', 'Поточний пароль не підходить.');
-    if (newPass.length < 6 || !/\d/.test(newPass) || !/[a-zа-яєіїґ]/i.test(newPass)) {
-      return formError('passError', 'Новий пароль: від 6 символів, літери та цифри.');
-    }
-    updateUser(user.id, { pass: passHash(user.phone, newPass) });
-    form.reset();
-    formError('passError', '');
-    notice = 'Пароль оновлено.';
-    noticeKind = 'success';
-    render();
-  });
-}
-
-/* ---------- вибір класу, теми та предметів ---------- */
-function chooseKlass(user, klass) {
-  var value = normClass(klass);
-  if (!value) {
-    notice = 'Клас не вибрано, перелік предметів лишився порожнім.';
-    noticeKind = 'info';
+function navigate() {
+  var hash = location.hash;
+  if (hash === '#main') {
+    document.getElementById('main').focus();
     return;
   }
-  updateUser(user.id, { klass: value });
-  scheduleClass = value;
-  panelKlass = value;
-  notice = 'Збережено: ' + value + ' клас. Щоденник показує ' + classSubjects(value).length + ' предметів.';
-  noticeKind = 'success';
+  var parts = hash.replace(/^#\/?/, '').split(':');
+  route = Object.hasOwn(PAGES, parts[0]) ? parts[0] : (parts[0] ? 'notfound' : 'home');
+  setDrawer(false);
+  loadPage();
+  if (user && ['schedule', 'diary', 'profile'].includes(route)) syncSession();
+  if (parts[1]) requestAnimationFrame(function () { document.getElementById(parts[1])?.scrollIntoView(); });
+  else window.scrollTo(0, 0);
 }
 
-/* ---------- реєстрація сторінок ---------- */
-PAGES.home = homePage;
-PAGES.history = historyPage;
-PAGES.students = studentsPage;
-PAGES.teachers = teachersPage;
-PAGES.schedule = schedulePage;
-PAGES.news = newsPage;
-PAGES.gallery = galleryPage;
-PAGES.dining = diningPage;
-PAGES.admissions = admissionsPage;
-PAGES.contacts = contactsPage;
-PAGES.auth = authPage;
-PAGES.profile = profilePage;
-PAGES.diary = diaryPage;
-PAGES.teacher = teacherPage;
-PAGES.notfound = notFoundPage;
-
-function appendMarkInput(key) {
-  var own = Array.prototype.filter.call(document.querySelectorAll('.mark-input'), function (input) {
-    return input.getAttribute('data-entry') === key;
-  });
-  if (!own.length) return;
-  var field = document.createElement('input');
-  field.className = 'mark-input';
-  field.type = 'number';
-  field.min = String(SCALE_MIN);
-  field.max = String(SCALE_MAX);
-  field.step = '1';
-  field.placeholder = '–';
-  field.setAttribute('data-entry', key);
-  field.setAttribute('aria-label', 'Додатковий бал');
-  own[own.length - 1].insertAdjacentElement('afterend', field);
-  field.focus();
+async function syncSession() {
+  var request = ++sessionRevision;
+  var previous = user?.id + ':' + user?.klass;
+  var status = accountStatus;
+  try {
+    var session = await api('session');
+    if (request !== sessionRevision) return;
+    user = session.user;
+    accountStatus = 'ready';
+  } catch {
+    if (request !== sessionRevision) return;
+    accountStatus = 'offline';
+  }
+  var changed = previous !== user?.id + ':' + user?.klass;
+  if (changed || status !== accountStatus) loadPage();
+  else if (route === 'home' || route === 'news') loadNews();
 }
 
-function saveEntry(key, label, subject) {
-  var res = readMarkInputs(key);
-  if (res.bad) {
-    notice = 'Перевірте підсвічені поля: бал цілий, від ' + SCALE_MIN + ' до ' + SCALE_MAX + '.';
-    noticeKind = 'info';
-    render();
+document.addEventListener('click', async function (event) {
+  var button = event.target.closest('button');
+  if (!button) {
+    if (event.target.closest('#navDrawer a')) setDrawer(false);
     return;
   }
-  setMarkByKey(key, res.list);
-  panelOpenPupil = label;
-  notice = res.list.length
-    ? 'Збережено ' + res.list.length + ' ' + plural(res.list.length, ['бал', 'бали', 'балів']) + ' для ' + label + ' (' + subject + ').'
-    : 'Оцінки для ' + label + ' (' + subject + ') прибрано.';
-  noticeKind = 'success';
-  render();
-}
-
-function saveAllEntries() {
-  var groups = readAllEntries();
-  var bad = document.querySelectorAll('.mark-input.bad').length;
-  if (bad) {
-    notice = 'Деякі поля підсвічено: бал має бути цілим числом від ' + SCALE_MIN + ' до ' + SCALE_MAX + '.';
-    noticeKind = 'info';
-    render();
-    return;
-  }
-  var keys = Object.keys(groups);
-  var total = 0;
-  var filled = 0;
-  keys.forEach(function (key) {
-    var list = [];
-    groups[key].forEach(function (input) {
-      var raw = String(input.value).trim();
-      if (!raw) return;
-      var v = Number(raw);
-      if (v >= SCALE_MIN && v <= SCALE_MAX) list.push(v);
-    });
-    setMarkByKey(key, list);
-    if (list.length) filled++;
-    total += list.length;
-  });
-  notice = 'Журнал оновлено: ' + filled + ' ' + plural(filled, ['учень', 'учні', 'учнів']) +
-    ', виставлено ' + total + ' ' + plural(total, ['бал', 'бали', 'балів']) + '.';
-  noticeKind = 'success';
-  render();
-}
-
-function copyContacts() {
-  var text = SCHOOL.full + ', ' + SCHOOL.address + '. Приймальня ' + SCHOOL.phone + ', ' + SCHOOL.email +
-    ', ЄДРПОУ ' + SCHOOL.edrpou + '.';
-  var done = function () {
-    notice = 'Реквізити ліцею скопійовано в буфер обміну.';
-    noticeKind = 'success';
-    render();
-  };
-  var failed = function () {
-    notice = 'Браузер не дав доступ до буфера обміну, скопіюйте текст зі сторінки вручну.';
-    noticeKind = 'info';
-    render();
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done, failed);
-  } else {
-    failed();
-  }
-}
-
-function doLogout() {
-  lsSet(LS_SESSION, '');
-  scheduleClass = '';
-  notice = 'Ви вийшли з профілю, дані лишилися в цьому браузері.';
-  noticeKind = 'info';
-  if (location.hash === '#/profile' || location.hash === '#/diary' || location.hash === '#/teacher') {
-    location.hash = '#/home';
-  } else {
-    render();
-  }
-}
-
-function deleteAccount() {
-  var user = currentUser();
-  if (!user) return;
-  if (!window.confirm('Видалити профіль ' + user.fullName + ' з цього браузера? Оцінки вчителя залишаться, але акаунт повернути не можна.')) return;
-  saveUsers(loadUsers().filter(function (u) { return u.id !== user.id; }));
-  lsSet(LS_SESSION, '');
-  scheduleClass = '';
-  notice = 'Профіль ' + user.fullName + ' видалено з цього браузера.';
-  noticeKind = 'info';
-  location.hash = '#/home';
-}
-
-/* ---------- обробники подій ---------- */
-document.addEventListener('click', function (ev) {
-  var target = ev.target;
-  var el = target && target.closest
-    ? target.closest('[data-auth-tab],[data-teacher-access],[data-nav-filter],[data-teacher-filter],[data-class-chip],[data-panel-class],[data-dining-day],[data-action]')
-    : null;
-  if (!el) return;
-
-  if (el.hasAttribute('data-auth-tab')) {
-    authMode = el.getAttribute('data-auth-tab');
+  var data = button.dataset;
+  if (data.authMode) {
+    authMode = data.authMode;
     if (authMode === 'login') teacherAccess = false;
-    render();
-    return;
+    redraw();
   }
-  if (el.hasAttribute('data-teacher-access')) {
+  if (data.action === 'teacher-access') {
+    var previous = new FormData(button.form);
     teacherAccess = !teacherAccess;
-    render();
-    return;
+    redraw();
+    var form = app.querySelector('.auth-form');
+    ['fullName', 'phone', 'password', 'password2'].forEach(function (name) { form.elements[name].value = previous.get(name) || ''; });
+    form.querySelector('[data-action="teacher-access"]').focus();
   }
-  if (el.hasAttribute('data-nav-filter')) {
-    navFilter = el.getAttribute('data-nav-filter');
-    render();
-    return;
+  if (data.action === 'copy-contacts') {
+    var status = document.getElementById('copyStatus');
+    var content = [SCHOOL.full, SCHOOL.address, SCHOOL.phone, SCHOOL.email, 'ЄДРПОУ ' + SCHOOL.edrpou].join(', ');
+    try {
+      await navigator.clipboard.writeText(content);
+      status.textContent = 'Реквізити скопійовано.';
+    } catch { status.textContent = content; }
   }
-  if (el.hasAttribute('data-teacher-filter')) {
-    teacherFilter = el.getAttribute('data-teacher-filter');
-    render();
-    return;
+  if (data.categoryFilter) { navFilter = data.categoryFilter; filterCards(); }
+  if (data.day !== undefined) {
+    scheduleDay = Number(data.day);
+    redraw();
+    document.querySelector('[data-day="' + scheduleDay + '"]')?.focus({ preventScroll: true });
   }
-  if (el.hasAttribute('data-class-chip')) {
-    scheduleClass = el.getAttribute('data-class-chip');
-    render();
-    return;
+  if (data.action === 'retry') loadPage();
+  if (data.action === 'logout') {
+    button.disabled = true;
+    try {
+      await api('logout', 'POST', {});
+      sessionRevision++;
+      user = null;
+      authMode = 'login';
+      teacherAccess = false;
+      if (route === 'home') loadPage();
+      else location.hash = '#/home';
+    } catch (error) {
+      button.disabled = false;
+      window.alert(error.message);
+    }
   }
-  if (el.hasAttribute('data-panel-class')) {
-    panelKlass = el.getAttribute('data-panel-class');
-    panelOpenPupil = '';
-    render();
-    return;
+  if (data.editMark) {
+    var mark = pageData.marks.find(function (item) { return item.id === Number(data.editMark); });
+    if (!mark) return;
+    var container = button.closest('.mark-record');
+    if (!container.querySelector('form')) {
+      container.insertAdjacentHTML('beforeend', gradeForm({ id: mark.pupilId }, mark));
+      container.querySelector('form :is(select,input)')?.focus();
+    }
   }
-  if (el.hasAttribute('data-dining-day')) {
-    diningDay = Number(el.getAttribute('data-dining-day')) || 0;
-    render();
-    return;
-  }
-  var action = el.getAttribute('data-action');
-  var key = el.getAttribute('data-entry') || '';
-  var klass = el.getAttribute('data-klass') || panelKlass;
-  var subject = el.getAttribute('data-subject') || panelSubject;
-
-  if (action === 'logout') { doLogout(); return; }
-  if (action === 'delete-account') { deleteAccount(); return; }
-  if (action === 'copy-contacts') { copyContacts(); return; }
-  if (action === 'close-nav') { setDrawer(false); return; }
-  if (action === 'add-mark') { appendMarkInput(key); return; }
-  if (action === 'save-entry') { saveEntry(key, el.getAttribute('data-name') || 'учня', el.getAttribute('data-subject') || subject); return; }
-  if (action === 'clear-entry') {
-    setMarkByKey(key, []);
-    panelOpenPupil = el.getAttribute('data-name') || '';
-    notice = 'Оцінки прибрано, учень залишився без балів з цього предмета.';
-    noticeKind = 'info';
-    render();
-    return;
-  }
-  if (action === 'save-all') { saveAllEntries(); return; }
-  if (action === 'clear-subject') {
-    if (!window.confirm('Прибрати всі бали з предмета «' + subject + '» для ' + klass + ' класу?')) return;
-    removeSubjectMarks(klass, subject);
-    notice = 'Бали предмета «' + subject + '» для ' + klass + ' класу прибрано.';
-    noticeKind = 'info';
-    render();
+  if (data.deleteMark || data.deleteHomework) {
+    if (!window.confirm(data.deleteMark ? 'Видалити цю оцінку або відгук?' : 'Видалити це завдання?')) return;
+    button.disabled = true;
+    var view = revision;
+    try {
+      await api(data.deleteMark ? 'mark' : 'homework', 'DELETE', {
+        id: Number(data.deleteMark || data.deleteHomework), klass: journalClass, subject: journalSubject
+      });
+      if (view === revision && data.deleteMark) {
+        var removed = pageData.marks.find(function (mark) { return mark.id === Number(data.deleteMark); });
+        if (removed) {
+          pageData.marks = pageData.marks.filter(function (mark) { return mark.id !== removed.id; });
+          refreshPupil(removed.pupilId);
+        }
+      } else if (view === revision) loadPage();
+    } catch (error) {
+      button.disabled = false;
+      window.alert(error.message);
+    }
   }
 });
 
-document.addEventListener('change', function (ev) {
-  var el = ev.target;
-  if (!el || !el.getAttribute) return;
-  var which = el.getAttribute('data-select');
-  if (which) {
-    var user = currentUser();
-    if (which === 'diary-klass') {
-      if (user) chooseKlass(user, el.value);
-      render();
-      return;
-    }
-    if (which === 'panel-subject') { panelSubject = el.value; panelOpenPupil = ''; render(); return; }
-  }
-  if (el.type === 'checkbox' && el.hasAttribute('data-hw')) {
-    toggleHomework(el.getAttribute('data-hw'), el.checked);
-    var row = el.closest ? el.closest('.cfg-row') : null;
-    if (row) row.classList.toggle('done', el.checked);
-    return;
-  }
-  if (el.className && el.className.indexOf('mark-input') > -1) {
-    var raw = String(el.value).trim();
-    if (!raw) {
-      el.classList.remove('bad');
-      el.classList.remove('low', 'mid', 'top');
-      return;
-    }
-    var v = Number(raw);
-    var wrong = !(isFinite(v) && Math.floor(v) === v && v >= SCALE_MIN && v <= SCALE_MAX);
-    el.classList.toggle('bad', wrong);
-    el.classList.remove('low', 'mid', 'top');
-    if (!wrong) el.classList.add(markTone(v));
+document.addEventListener('input', function (event) {
+  if (event.target.id === 'navSearch') filterCards();
+  if (event.target.id === 'journalQuery') {
+    journalQuery = event.target.value;
+    filterPupils();
   }
 });
 
-document.addEventListener('keydown', function (ev) {
-  if (ev.key === 'Escape' && isDrawerOpen()) {
+document.addEventListener('change', async function (event) {
+  var element = event.target;
+  if (element.id === 'scheduleClass' && user?.role !== 'pupil' && CLASSES.includes(element.value)) {
+    scheduleClass = element.value;
+    redraw();
+    document.getElementById('scheduleClass').focus();
+  }
+  if (element.id === 'journalClass' || element.id === 'journalSubject') {
+    if (element.id === 'journalClass') journalClass = element.value;
+    else journalSubject = element.value;
+    loadPage();
+  }
+  if (element.dataset.homeworkDone) {
+    element.disabled = true;
+    try {
+      await api('homework/done', 'POST', { id: Number(element.dataset.homeworkDone), done: element.checked });
+    } catch (error) {
+      element.checked = !element.checked;
+      window.alert(error.message);
+    } finally {
+      element.disabled = false;
+    }
+  }
+});
+
+document.addEventListener('submit', async function (event) {
+  var form = event.target;
+  var kind = form.dataset.form;
+  if (!kind) return;
+  event.preventDefault();
+  var button = form.querySelector('button[type="submit"]');
+  if (button.disabled) return;
+  var message = form.querySelector('.form-message');
+  var values = Object.fromEntries(new FormData(form));
+  var request = revision;
+  button.disabled = true;
+  message.textContent = '';
+  try {
+    if (kind === 'register' || kind === 'login') {
+      if (kind === 'register') {
+        if (values.password !== values.password2) throw new Error('Паролі не збігаються.');
+        delete values.password2;
+        values.role = teacherAccess ? 'teacher' : 'pupil';
+      }
+      var account = (await api(kind, 'POST', values)).user;
+      sessionRevision++;
+      user = account;
+      accountStatus = 'ready';
+      location.hash = '#/' + ({ pupil: 'diary', teacher: 'teacher', admin: 'admin' }[user.role]);
+    } else if (kind === 'password') {
+      await api('password', 'POST', values);
+      form.reset();
+      message.textContent = 'Пароль оновлено.';
+    } else if (kind === 'delete-account') {
+      if (!window.confirm('Видалити ваш профіль?')) return;
+      await api('account', 'DELETE', values);
+      sessionRevision++;
+      user = null;
+      location.hash = '#/home';
+    } else if (kind === 'invite' || kind === 'class') {
+      var result = await api('admin/' + kind, 'POST', values);
+      if (kind === 'invite') {
+        form.querySelector('#inviteResult').hidden = false;
+        var code = form.querySelector('#inviteCode');
+        code.value = result.code;
+        message.textContent = 'Код дійсний протягом 24 годин.';
+        code.focus();
+        code.select();
+      } else {
+        message.textContent = result.user.fullName + ' · Новий клас ' + result.user.klass;
+      }
+    } else if (kind === 'mark' || kind === 'homework') {
+      values.klass = journalClass;
+      values.subject = journalSubject;
+      if (kind === 'mark') {
+        values.pupilId = form.dataset.pupil;
+        if (values.score) values.score = Number(values.score);
+        if (form.dataset.mark) values.id = Number(form.dataset.mark);
+      }
+      var saved = await api(kind, form.dataset.mark ? 'PATCH' : 'POST', values);
+      if (request === revision && kind === 'mark') {
+        var index = pageData.marks.findIndex(function (mark) { return mark.id === saved.mark.id; });
+        if (index === -1) pageData.marks.unshift(saved.mark);
+        else pageData.marks[index] = saved.mark;
+        refreshPupil(saved.mark.pupilId);
+      } else if (request === revision) loadPage();
+    }
+  } catch (error) {
+    message.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.getElementById('navBurger').addEventListener('click', function () {
+  setDrawer(!document.body.classList.contains('nav-open'));
+});
+document.querySelector('.skip-link').addEventListener('click', function (event) {
+  event.preventDefault();
+  document.getElementById('main').focus();
+});
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape' && document.body.classList.contains('nav-open')) {
     setDrawer(false);
-    var burger = document.getElementById('navBurger');
-    if (burger) burger.focus();
+    document.getElementById('navBurger').focus();
   }
 });
+document.getElementById('themeToggle').addEventListener('click', function () {
+  var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('lyceum21_theme', next); } catch {}
+  setTheme(next);
+});
+window.addEventListener('hashchange', navigate);
+window.addEventListener('online', syncSession);
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden) syncSession();
+});
+window.setInterval(function () {
+  highlightTime();
+  if (route === 'home' || route === 'news') { renderNews(); loadNews(); }
+}, 60_000);
 
-/* ---------- запуск ---------- */
-function boot() {
-  var user = currentUser();
-  if (user) {
-    scheduleClass = user.klass || '';
-    if (user.klass) panelKlass = user.klass;
-  } else if (!lsGet(LS_SESSION)) {
-    panelKlass = '7-В';
-  }
-  applyTheme(currentTheme());
+setTheme(document.documentElement.dataset.theme || 'dark');
+initBackground();
+navigate();
+syncSession();
 
-  document.getElementById('themeToggle').addEventListener('click', toggleTheme);
-  document.getElementById('navBurger').addEventListener('click', function () {
-    setDrawer(!isDrawerOpen());
-  });
-
-  window.addEventListener('hashchange', render);
-  window.addEventListener('resize', moveAuthThumb);
-
-  render();
-
-  if (location.protocol.indexOf('http') === 0 && 'serviceWorker' in navigator) {
-    window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function () { /* офлайн-кеш недоступний */ });
-    });
-  }
+if (location.protocol.indexOf('http') === 0 && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(function () {});
 }
-
-boot();
