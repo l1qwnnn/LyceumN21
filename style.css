@@ -105,7 +105,6 @@ button, input, select, summary, a { touch-action: manipulation; }
 html[data-theme="light"] .site-background { filter: invert(1); }
 .site-background::after { content: ''; position: absolute; inset: 0; background: var(--video-overlay); }
 .video-playing .site-background { opacity: 1; }
-.video-toggle { position: fixed; inset: auto max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) auto; z-index: 4; }
 .page, footer { position: relative; }
 
 .navbar { position: fixed; z-index: 8; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: space-between; gap: 14px; width: min(var(--content), calc(100% - 2 * var(--gutter))); padding: 10px 14px; background: var(--nav-bg); backdrop-filter: blur(18px); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 8px 30px var(--shadow); }
@@ -134,6 +133,9 @@ html[data-theme="light"] .site-background { filter: invert(1); }
 .hero p { font-size: clamp(1.05rem, 3vw, 1.5rem); color: var(--text-dim); }
 .hero-actions, .entry-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .hero-actions { justify-content: center; margin-top: 22px; }
+.contact-actions { display: flex; align-items: flex-end; gap: 8px; }
+.contact-actions > .entry-actions { flex-wrap: nowrap; }
+.contact-actions > .abtn { flex: none; }
 
 .btn-dark, .abtn, .ftab { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: 12px; text-align: center; text-decoration: none; font-size: .875rem; font-weight: 700; }
 .btn-dark { background: var(--dark-btn-bg); color: #fff; }
@@ -249,6 +251,9 @@ footer { padding: 24px var(--gutter) 34px; background: var(--panel); color: var(
   .nav-open .nav-drawer { display: grid; }
 }
 @media (max-width: 800px) {
+  .contact-actions { display: block; }
+  .contact-actions > .entry-actions { flex-wrap: wrap; }
+  .contact-actions > .abtn { margin-top: 6px; }
   .schedule-layout { grid-template-columns: 1fr; }
   .schedule-bells .schedule-timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -279,7 +284,7 @@ footer { padding: 24px var(--gutter) 34px; background: var(--panel); color: var(
   .cards { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .site-background, .video-toggle { display: none; }
+  .site-background { display: none; }
 }
 
 .news-window { max-width: 100%; overflow: hidden; padding-block: 4px; }

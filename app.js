@@ -111,25 +111,18 @@ function setTheme(theme) {
 function initBackground() {
   var video = document.getElementById('siteVideo');
   if (!video?.dataset.src) return;
-  var toggle = document.getElementById('videoToggle');
   var motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   var allowed = !motion.matches && !navigator.connection?.saveData;
-  var paused = false;
   function update() {
-    if (paused || !allowed || document.hidden) video.pause();
+    if (!allowed || document.hidden) video.pause();
     else video.play().catch(function () {});
   }
   video.addEventListener('playing', function () {
     document.documentElement.classList.add('video-playing');
-    toggle.hidden = false;
-    toggle.textContent = 'Призупинити фон';
   });
-  video.addEventListener('pause', function () { toggle.textContent = 'Відновити фон'; });
   video.addEventListener('error', function () {
     document.documentElement.classList.remove('video-playing');
-    toggle.hidden = true;
   });
-  toggle.addEventListener('click', function () { paused = !video.paused; update(); });
   motion.addEventListener('change', function () {
     allowed = !motion.matches && !navigator.connection?.saveData;
     if (allowed && !video.getAttribute('src')) video.src = video.dataset.src;
@@ -317,8 +310,9 @@ function contactsPage() {
     ['Електронна пошта', SCHOOL.email], ['ЄДРПОУ', SCHOOL.edrpou],
     ['Графік роботи', SCHOOL.hours], ['Прийом громадян', SCHOOL.reception], ['Директор', SCHOOL.director]];
   return heading('Контакти ліцею', 'Напишіть або зателефонуйте до приймальні. З питаннями свого класу звертайтеся до класного керівника.') +
-    card('Реквізити та зв’язок', rows(contacts) + actions([['tel:' + SCHOOL.phoneRaw, 'Зателефонувати'], ['mailto:' + SCHOOL.email, 'Написати листа']]) +
-      '<button class="abtn" type="button" data-action="copy-contacts">Скопіювати реквізити</button><p role="status" id="copyStatus"></p>') +
+    card('Реквізити та зв’язок', rows(contacts) + '<div class="contact-actions">' +
+      actions([['tel:' + SCHOOL.phoneRaw, 'Зателефонувати'], ['mailto:' + SCHOOL.email, 'Написати листа']]) +
+      '<button class="abtn" type="button" data-action="copy-contacts">Скопіювати реквізити</button></div><p role="status" id="copyStatus"></p>') +
     card('Як дістатися', '<p>Ліцей розташований на вулиці Святослава Ріхтера, 6-а, у Житомирі.</p>' +
       actions([['https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(SCHOOL.address), 'Прокласти маршрут']])) +
     card('Куди звертатися далі', rows([['Департамент освіти Житомирської міської ради', '(0412) 47-03-94'],
