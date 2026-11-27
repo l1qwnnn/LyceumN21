@@ -264,7 +264,7 @@ function homePage() {
     Object.keys(NAV_CATS).map(function (key) { return '<button class="ftab" type="button" data-category-filter="' + key + '">' + esc(NAV_CATS[key]) + '</button>'; }).join('') +
     '</div><div class="cards" id="portalCards">' + items + '</div><p id="emptyCards" class="muted" hidden>Розділів не знайдено.</p></section>' +
     card('Новини та оголошення ліцею', '<div id="newsList"></div>') +
-    card('Ліцей у цифрах', rows([['Рік заснування', SCHOOL.founded], ['Учителів за даними АІКОМ', SCHOOL.teachers], ['Максимальний бал у 5–9 класах', 12]]));
+    '<div class="home-history-link">' + link('#/history', 'Перейти до історії ліцею') + '</div>';
 }
 
 function filterCards() {
@@ -285,7 +285,13 @@ function filterCards() {
 }
 
 function historyPage() {
-  return heading('Біографія ліцею', 'Школу № 21 у Житомирі відкрито у 1962 році. Сьогодні це комунальний ліцей із початковою школою та гімназією.') +
+  return heading('Історія ліцею', 'Від середньої школи № 21, заснованої у 1962 році, до сучасного ліцею міста Житомира.') +
+    card('1962 · Початок історії', '<p>Заклад розпочав свою історію у 1962 році як Житомирська середня школа № 21. Збережені кадрові накази розповідають про формування першого колективу в серпні того року.</p>' +
+      '<p>16 серпня 1962 року заступницею директора з навчально-виховної роботи призначили вчительку математики Іраїду Бородачову. 20 серпня обласний відділ народної освіти видав наказ про призначення першого директора — Віталія Ятеля; міський наказ датований 22 серпня.</p>' +
+      '<p>Одним із перших документів самої школи був наказ № 2 від 21 серпня 1962 року про призначення секретаря Ірини Соколової. Ці записи зберігають імена людей, які організовували роботу закладу на самому початку.</p>') +
+    card('Розвиток шкільного життя', '<p>Історія школи охоплює не лише навчальні заняття. У серпні 1968 року організатором позашкільної та позакласної роботи став Михайло Вирченко. Архів кадрових призначень засвідчує подальшу роботу цього напряму у 1970–1980-х роках, а у 1991 році — посаду заступника директора з виховної роботи.</p>' +
+      '<p>Історична хроніка зберігає відомості про педагогів, які розвивали навчальну та виховну роботу від першого року існування школи.</p>') +
+    card('50-річчя та міжнародні проєкти', '<p>У 2012 році школа відзначила 50-річний ювілей. У публікації про цю подію місцева преса розповідала про її участь у міжнародних ініціативах з енергозбереження: українсько-нідерландській програмі «Молоді та енергоощадливі» та українсько-польському проєкті «Комплексні підходи до комунального енергозбереження».</p>') +
     card('Директорський склад', '<div class="timeline">' + DIRECTORS.map(function (director) {
       return '<div class="tl-item"><p class="tl-years">' + esc(director[0]) + '</p><p class="tl-name">' + esc(director[1]) +
         '</p><p class="tl-note">' + esc(director[2]) + '</p></div>';
@@ -486,7 +492,7 @@ function submit(label) {
 
 var phoneAttrs = 'type="tel" autocomplete="tel" placeholder="+380 67 123-45-67" required';
 var passwordAttrs = 'type="password" autocomplete="current-password" required';
-var newPasswordAttrs = 'type="password" autocomplete="new-password" minlength="6" maxlength="160" required';
+var newPasswordAttrs = 'type="password" autocomplete="new-password" minlength="10" maxlength="160" required';
 
 function authPage() {
   if (user) {
@@ -507,7 +513,7 @@ function authPage() {
     (register ? field('ПІБ · прізвище, ім’я, по батькові', 'fullName', 'autocomplete="name" placeholder="Коваленко Андрій Ігорович" minlength="5" maxlength="120" required') : '') +
     field('Номер телефону', 'phone', phoneAttrs) +
     field('Пароль', 'password', register ? newPasswordAttrs : passwordAttrs) +
-    (register ? '<p class="small muted">Щонайменше 6 символів, літери та цифри.</p>' +
+    (register ? '<p class="small muted">Щонайменше 10 символів, літери та цифри.</p>' +
       field('Повторіть пароль', 'password2', newPasswordAttrs) +
       '<button class="auth-teacher-link" type="button" data-action="teacher-access" aria-pressed="' + teacherAccess + '">' +
       (teacherAccess ? 'Звичайна реєстрація учня' : 'Реєстрація для педагога ліцею') + '</button>' +

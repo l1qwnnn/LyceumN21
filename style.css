@@ -134,6 +134,7 @@ html[data-theme="light"] .site-background { filter: invert(1); }
 .hero p { font-size: clamp(1.05rem, 3vw, 1.5rem); color: var(--text-dim); }
 .hero-actions, .entry-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .hero-actions { justify-content: center; margin-top: 22px; }
+.home-history-link { display: flex; justify-content: center; padding: 0 var(--gutter) 28px; }
 .contact-actions { display: flex; align-items: flex-end; gap: 8px; }
 .contact-actions > .entry-actions { flex-wrap: nowrap; }
 .contact-actions > .abtn { flex: none; }

@@ -1,5 +1,19 @@
 'use strict';
 
+if (typeof document !== 'undefined') {
+  /* Тема застосовується до першого кадру, щоб уникнути білого спалаху. */
+  (function () {
+    try {
+      var saved = window.localStorage.getItem('lyceum21_theme');
+      var light = saved === 'light' || (!saved && window.matchMedia('(prefers-color-scheme: light)').matches);
+      document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+      document.getElementById('themeColor').content = light ? '#f4f6f9' : '#050505';
+    } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+  })();
+
+}
+
+
 var SCHOOL = {
   full: 'Ліцей № 21 міста Житомира',
   founded: 1962,

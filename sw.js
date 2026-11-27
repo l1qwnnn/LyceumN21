@@ -1,6 +1,6 @@
 'use strict';
 
-var CACHE = 'lyceum21-v11';
+var CACHE = 'lyceum21-v12';
 var ASSETS = [
   './', './index.html', './style.css', './data.js', './app.js', './manifest.webmanifest',
   './assets/icon.svg', './assets/logo.jpg', './assets/photos/liceum-facade.jpg', './assets/photos/liceum-entrance.jpg'
@@ -30,3 +30,4 @@ self.addEventListener('fetch', function (event) {
     return response;
   }).catch(function () { return caches.open(CACHE).then(function (cache) { return cache.match(request); }); }));
 });
+
